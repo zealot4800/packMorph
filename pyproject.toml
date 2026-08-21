@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "packmorph-sim"
+version = "0.1.0"
+description = "Simulation-only PackMorph extension with a deep sequence classifier"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24,<2",
+  "PyYAML>=6",
+  "matplotlib>=3.6",
+  "tensorflow>=2.15,<2.22",
+]
+
+[project.scripts]
+packmorph-sim = "packmorph.cli:main"
+
+[tool.setuptools]
+packages = ["packmorph"]
+package-dir = {packmorph = "src"}

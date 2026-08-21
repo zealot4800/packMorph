@@ -1,0 +1,44 @@
+seed: 42
+
+data:
+  # Relative paths are resolved from this configuration file's directory.
+  # For a full-corpus study, use ../data and set max_windows_per_capture to null.
+  root: ../dataset_10
+  cache: ../artifacts/sequences.npz
+  environments: ["Non VPN", "VPN"]
+  categories: ["Streaming", "VoIP", "Chat", "C2", "File Transfer"]
+  max_sequence_length: 128
+  min_packets: 8
+  flow_idle_timeout_seconds: 120.0
+  # Keep a bounded prefix of windows per capture; use null for exhaustive extraction.
+  max_windows_per_capture: 200
+  extraction_workers: 2
+  tshark_binary: tshark
+
+split:
+  test_fraction: 0.20
+
+model:
+  # auto uses an available GPU and otherwise falls back to CPU.
+  # Use cpu or gpu to require a specific backend.
+  device: auto
+  conv_filters: [32, 64]
+  kernel_sizes: [7, 5]
+  gru_units: 48
+  dense_units: 64
+  dropout: 0.25
+  learning_rate: 0.001
+  batch_size: 128
+  epochs: 25
+  patience: 5
+  validation_fraction: 0.15
+
+morph:
+  target_policy: random
+  maximum_padding_ratio: 1.20
+  maximum_fct_ratio: 1.20
+  minimum_packet_size: 40
+  maximum_packet_size: 1514
+
+output:
+  directory: ../artifacts/experiment
