@@ -114,3 +114,7 @@ The paper does not publish its code, exact profile distributions, transformation
 The simulation treats application bytes as opaque, direction-specific capacity and does not carry real payloads. It therefore measures byte accounting rather than bit-exact decoding. Network loss, congestion, TCP retransmissions, synchronization metadata, and application-visible correctness require the excluded prototype/emulation phase.
 
 When a source epoch exceeds one target template's capacity, the simulator represents the queued overflow as additional target-shaped windows before aggregating its prediction. This approximates the paper's next-epoch buffering without implementing the excluded live scheduler.
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
