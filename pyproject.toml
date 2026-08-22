@@ -8,12 +8,11 @@ version = "0.1.0"
 description = "Simulation-only PackMorph extension with a deep sequence classifier"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 dependencies = [
   "numpy>=1.24,<2",
   "PyYAML>=6",
-  "matplotlib>=3.6",
-  "tensorflow>=2.15,<2.22",
+  "tensorflow>=2.15,<2.21",
 ]
 
 [project.scripts]

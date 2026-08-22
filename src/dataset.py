@@ -76,9 +76,6 @@ class SequenceDataset:
             raise ValueError(f"No extracted samples found for environment '{name}'")
         return int(matches[0])
 
-    def group_for_row(self, row: int) -> str:
-        return str(self.group_names[int(self.group_ids[row])])
-
     def validate(self) -> None:
         """Reject malformed caches before their contents reach the experiment."""
         numeric_dtypes = {
@@ -203,7 +200,7 @@ class SequenceDataset:
     ) -> "SequenceDataset | None":
         try:
             return cls.load(path, expected_fingerprint=fingerprint)
-        except (BadZipFile, EOFError, FileNotFoundError, OSError, ValueError):
+        except (FileNotFoundError, ValueError):
             return None
 
     @classmethod
@@ -216,6 +213,8 @@ class SequenceDataset:
                 fingerprint = str(data["fingerprint"].item())
                 arrays = {name: data[name] for name in _CACHE_ARRAY_FIELDS}
         except FileNotFoundError:
+            raise
+        except PermissionError:
             raise
         except (
             BadZipFile,

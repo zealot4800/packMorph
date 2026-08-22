@@ -7,7 +7,7 @@ import numpy as np
 from .dataset import SequenceDataset
 
 
-@dataclass
+@dataclass(slots=True)
 class FeatureScaler:
     length_mean: float
     length_std: float
@@ -42,11 +42,3 @@ class FeatureScaler:
         features[..., 2][mask] = np.sign(dataset.sizes[mask]).astype(np.float32)
         features[..., 3] = mask.astype(np.float32)
         return features
-
-    def as_dict(self) -> dict[str, float]:
-        return {
-            "length_mean": self.length_mean,
-            "length_std": self.length_std,
-            "iat_mean": self.iat_mean,
-            "iat_std": self.iat_std,
-        }

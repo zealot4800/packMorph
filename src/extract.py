@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ import numpy as np
 
 from .dataset import CACHE_SCHEMA_VERSION, SequenceDataset, SequenceRecord, from_records
 
+
+logger = logging.getLogger(__name__)
 
 TSHARK_FIELDS = (
     "frame.time_epoch",
@@ -229,9 +232,8 @@ def extract_capture(
     environment: str,
     category: str,
     config: dict,
-    controller: _ExtractionController | None = None,
+    controller: _ExtractionController,
 ) -> list[SequenceRecord]:
-    controller = controller or _ExtractionController()
     if controller.cancelled:
         raise _ExtractionCancelled("Capture extraction was cancelled")
     command = [
@@ -354,7 +356,8 @@ def extract_capture(
         error_log.seek(0)
         stderr = error_log.read().strip()
         if not stopped_early and process.returncode != 0:
-            raise RuntimeError(f"tshark failed for {pcap_path}: {stderr}")
+            detail = stderr[-2_000:] or "no error output"
+            raise RuntimeError(f"tshark failed for {pcap_path}: {detail}")
 
     if not stopped_early:
         for key, flow in active.items():
@@ -405,7 +408,7 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
             "The PCAP manifest changed before extraction began; retry extraction"
         )
 
-    print(
+    logger.info(
         f"Extracting {len(tasks)} captures with {data_config['extraction_workers']} workers"
     )
 
@@ -451,7 +454,13 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
         records.extend(capture_records)
         if capture_records:
             eligible_capture_counts[(task[0], task[1])] += 1
-        print(f"  {task[0]}/{task[1]}/{task[2].name}: {len(capture_records)} sequences")
+        logger.debug(
+            "%s/%s/%s: %d sequences",
+            task[0],
+            task[1],
+            task[2].name,
+            len(capture_records),
+        )
 
     insufficient_eligible = [
         (environment, category, eligible_capture_counts[(environment, category)])
@@ -482,5 +491,5 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
         starting_fingerprint,
     )
     dataset.save(data_config["cache"])
-    print(f"Saved {len(dataset)} sequences to {data_config['cache']}")
+    logger.info("Saved %d sequences to %s", len(dataset), data_config["cache"])
     return dataset

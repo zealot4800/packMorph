@@ -21,24 +21,40 @@ split:
 model:
   # auto uses an available GPU and otherwise falls back to CPU.
   # Use cpu or gpu to require a specific backend.
-  device: auto
+  device: cpu
   conv_filters: [32, 64]
   kernel_sizes: [7, 5]
-  gru_units: 48
+  context_filters: 48
+  dilations: [2, 4, 8, 16]
   dense_units: 64
   dropout: 0.25
   learning_rate: 0.001
   batch_size: 128
-  epochs: 25
+  epochs: 15
   patience: 5
   validation_fraction: 0.15
+  # Independently initialized selectors reduce selector-specific overfitting.
+  selector_count: 2
+  surrogate_seed_offset: 1000
 
 morph:
-  target_policy: random
+  # Optimize target-profile candidates under exact per-source target quotas.
+  # The exact guided assignment matrix is limited to dimension 512.
+  target_policy: balanced_guided
+  candidates_per_target: 4
+  # Fractions of the configured per-sequence padding and FCT allowances.
+  padding_fractions: [0.0, 0.5, 1.0]
+  fct_fractions: [0.0, 0.5, 1.0]
+  # Prefer lower-overhead Pareto candidates within this attack-utility gap.
+  attack_utility_tolerance: 0.01
+  # Scale normalized bandwidth and FCT in the Chebyshev resource cost.
+  bandwidth_cost_weight: 1.0
+  fct_cost_weight: 1.0
   maximum_padding_ratio: 1.20
   maximum_fct_ratio: 1.20
   minimum_packet_size: 40
   maximum_packet_size: 1514
 
 output:
+  # A completed run publishes only summary.json here.
   directory: ../artifacts/experiment
