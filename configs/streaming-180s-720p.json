@@ -1,0 +1,35 @@
+{
+  "workload_type": "streaming",
+  "profile": "180s-720p",
+  "duration_seconds": 180,
+  "width": 1280,
+  "height": 720,
+  "video_bitrate_kbps": 1200,
+  "audio_bitrate_kbps": 96,
+  "pseudorandom_generator": {
+    "algorithm": "hmac-sha256",
+    "seed": "replace-with-a-shared-stream-180s-secret"
+  },
+  "delta_time_ms": {"min": 300, "max": 800},
+  "read_chunk_bytes": 32768,
+  "policies": [
+    {
+      "name": "live-low-latency",
+      "target_sizes": [768, 1024, 1200, 1400],
+      "inter_packet_ms": [0.0, 0.5, 1.0, 0.5],
+      "target_frames_per_epoch": 192
+    },
+    {
+      "name": "buffered-video",
+      "target_sizes": [1024, 1200, 1280, 1400],
+      "inter_packet_ms": [0.0, 0.0, 0.5, 0.5],
+      "target_frames_per_epoch": 256
+    },
+    {
+      "name": "video-burst",
+      "target_sizes": [1200, 1280, 1400, 1400],
+      "inter_packet_ms": [0.0, 0.0, 0.0, 0.5],
+      "target_frames_per_epoch": 320
+    }
+  ]
+}

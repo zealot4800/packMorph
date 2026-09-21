@@ -1,0 +1,25 @@
+{
+  "workload_type": "file-transfer",
+  "profile": "500mb",
+  "size_bytes": 500000000,
+  "pseudorandom_generator": {
+    "algorithm": "hmac-sha256",
+    "seed": "replace-with-a-shared-file-500mb-secret"
+  },
+  "delta_time_ms": {"min": 200, "max": 400},
+  "read_chunk_bytes": 65536,
+  "policies": [
+    {
+      "name": "interactive-like",
+      "target_sizes": [384, 512, 768, 1024],
+      "inter_packet_ms": [0.5, 1.0, 2.0, 1.0],
+      "target_frames_per_epoch": 96
+    },
+    {
+      "name": "bulk-like",
+      "target_sizes": [1024, 1200, 1400, 1400],
+      "inter_packet_ms": [0.0, 0.0, 0.5, 0.0],
+      "target_frames_per_epoch": 256
+    }
+  ]
+}

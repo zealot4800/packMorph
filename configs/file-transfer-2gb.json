@@ -1,0 +1,37 @@
+{
+  "workload_type": "file-transfer",
+  "profile": "2gb",
+  "size_bytes": 2000000000,
+  "pseudorandom_generator": {
+    "algorithm": "hmac-sha256",
+    "seed": "replace-with-a-shared-file-2gb-secret"
+  },
+  "delta_time_ms": {"min": 300, "max": 600},
+  "read_chunk_bytes": 65536,
+  "policies": [
+    {
+      "name": "interactive-like",
+      "target_sizes": [384, 512, 768, 1024],
+      "inter_packet_ms": [0.5, 1.0, 2.0, 1.0],
+      "target_frames_per_epoch": 96
+    },
+    {
+      "name": "voice-like",
+      "target_sizes": [240, 320, 480, 640],
+      "inter_packet_ms": [1.0, 2.0, 1.0, 2.0],
+      "target_frames_per_epoch": 96
+    },
+    {
+      "name": "stream-like",
+      "target_sizes": [768, 1024, 1280, 1400],
+      "inter_packet_ms": [0.0, 0.5, 1.0, 0.5],
+      "target_frames_per_epoch": 192
+    },
+    {
+      "name": "bulk-like",
+      "target_sizes": [1024, 1200, 1400, 1400],
+      "inter_packet_ms": [0.0, 0.0, 0.5, 0.0],
+      "target_frames_per_epoch": 256
+    }
+  ]
+}
