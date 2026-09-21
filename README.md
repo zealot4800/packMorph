@@ -102,6 +102,7 @@ Do not add a default route through the experimental interface.
 
 Ubuntu's system `python3` is the only FlowShift runtime requirement. Actual
 video streaming additionally requires the Ubuntu `ffmpeg` package on both VMs.
+Run `./flowshift --help` to list the available commands.
 
 ## Keep one copy on the host
 
