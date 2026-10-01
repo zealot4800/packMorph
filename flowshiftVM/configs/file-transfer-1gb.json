@@ -1,0 +1,114 @@
+{
+  "workload_type": "file-transfer",
+  "profile": "1gb",
+  "size_bytes": 1000000000,
+  "read_chunk_bytes": 65536,
+  "pseudorandom_generator": {
+    "algorithm": "hmac-sha256",
+    "seed": "92835b32f1a39c0295ee37098bf1a5898e83b4f573aaa0c048dc827fa3607011"
+  },
+  "delta_time_ms": {
+    "min": 250,
+    "max": 250
+  },
+  "policies": [
+    {
+      "name": "toward-streaming-25",
+      "target_sizes": [
+        980,
+        1002,
+        1032,
+        1045
+      ],
+      "inter_packet_ms": [
+        0.0
+      ],
+      "target_frames_per_epoch": 7067
+    },
+    {
+      "name": "toward-streaming-50",
+      "target_sizes": [
+        958,
+        981,
+        1028,
+        1046
+      ],
+      "inter_packet_ms": [
+        0.0
+      ],
+      "target_frames_per_epoch": 7149
+    },
+    {
+      "name": "toward-streaming-75",
+      "target_sizes": [
+        936,
+        960,
+        1024,
+        1046
+      ],
+      "inter_packet_ms": [
+        0.0
+      ],
+      "target_frames_per_epoch": 7258
+    },
+    {
+      "name": "toward-streaming-100",
+      "target_sizes": [
+        913,
+        938,
+        1021,
+        1047
+      ],
+      "inter_packet_ms": [
+        0.0
+      ],
+      "target_frames_per_epoch": 7339
+    }
+  ],
+  "derivation": {
+    "method": "capture-balanced-CICFlowMeter-v1",
+    "environment": "VPN",
+    "source_class": "File Transfer",
+    "target_class": "Streaming",
+    "source_capture_count": 7,
+    "target_capture_count": 4,
+    "source_flow_count": 539,
+    "target_flow_count": 98,
+    "source_size_quantiles_bytes": [
+      1003,
+      1024,
+      1035,
+      1044
+    ],
+    "target_size_quantiles_bytes": [
+      913,
+      938,
+      1021,
+      1047
+    ],
+    "source_median_capture_rate_bytes_per_second": 27941254,
+    "source_median_capture_iat_ms": 0.038582,
+    "target_median_capture_iat_ms": 6.33866,
+    "assumed_application_rate_bytes_per_second": 27941254,
+    "rate_basis": "capture median capped by link",
+    "link_capacity_bps": 250000000,
+    "epoch_ms": 250,
+    "modeled_frame_header_bytes": 40,
+    "strengths": [
+      0.25,
+      0.5,
+      0.75,
+      1.0
+    ],
+    "size_quantiles": [
+      0.1,
+      0.3,
+      0.7,
+      0.9
+    ],
+    "calibration_seed": 42,
+    "estimated_max_wire_to_application_byte_ratio": 1.069283,
+    "frame_slot_headroom_fraction": 0.02,
+    "csv_sha256": "284f62334635fae53923c385514c523569358e354d10ff980c15ba2d9052bc2c"
+  }
+}

@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+vm1_ssh="zealot@192.168.56.11"
+vm2_ssh="zealot@192.168.56.12"
+vm1_data_ip="10.10.0.1"
+vm2_data_ip="10.10.0.2"
+remote_flowshift="/mnt/flowshift/flowshift"
+ssh_options=(-o BatchMode=yes -o ConnectTimeout=5)
+
+usage() {
+    echo "Usage: $0 --file {500mb|1gb|2gb} SOURCE_FILE" >&2
+    echo "       $0 --stream {60s|120s|180s} VIDEO_FILE" >&2
+}
+
+if [[ "${1:-}" == "--file" && $# -eq 3 ]]; then
+    mode="file"
+    experiment="$2"
+    source_file="$3"
+elif [[ "${1:-}" == "--stream" && $# -eq 3 ]]; then
+    mode="stream"
+    experiment="$2"
+    stream_video="$3"
+else
+    usage
+    exit 2
+fi
+
+if [[ "$mode" == "stream" ]]; then
+    case "$experiment" in
+        60s) config_name="streaming-60s-720p.json" ;;
+        120s) config_name="streaming-120s-720p.json" ;;
+        180s) config_name="streaming-180s-720p.json" ;;
+        *) usage; exit 2 ;;
+    esac
+else
+    case "$experiment" in
+        500mb) config_name="file-transfer-500mb.json" ;;
+        1gb) config_name="file-transfer-1gb.json" ;;
+        2gb) config_name="file-transfer-2gb.json" ;;
+        *) usage; exit 2 ;;
+    esac
+fi
+local_config="$base_dir/configs/$config_name"
+remote_config="/mnt/flowshift/configs/$config_name"
+if ! "$base_dir/flowshift" schedule --config "$local_config" --count 1 >/dev/null; then
+    echo "Invalid $mode experiment: $experiment" >&2
+    exit 2
+fi
+
+for target in "$vm1_ssh" "$vm2_ssh"; do
+    echo "Checking SSH access to $target..."
+    if ! ssh "${ssh_options[@]}" "$target" true; then
+        echo "Cannot reach $target with SSH key authentication." >&2
+        echo "Verify that the VM is running, its management IP is correct," >&2
+        echo "OpenSSH Server is active, and your SSH key is installed." >&2
+        exit 1
+    fi
+done
+
+if [[ "$mode" == "stream" ]]; then
+    printf -v check_video_command '%q ' test -f "$stream_video"
+    if ! ssh "${ssh_options[@]}" "$vm1_ssh" "$check_video_command"; then
+        echo "Video is not visible inside VM1: $stream_video" >&2
+        echo "Place it in this repository and use /mnt/flowshift/<filename>." >&2
+        exit 1
+    fi
+    if ! ssh "${ssh_options[@]}" "$vm1_ssh" command -v ffmpeg >/dev/null; then
+        echo "FFmpeg is missing on VM1. Install it with: sudo apt install ffmpeg" >&2
+        exit 1
+    fi
+    if ! ssh "${ssh_options[@]}" "$vm2_ssh" command -v ffplay >/dev/null; then
+        echo "FFplay is missing on VM2. Install it with: sudo apt install ffmpeg" >&2
+        exit 1
+    fi
+    if ! ssh "${ssh_options[@]}" "$vm2_ssh" test -S /run/user/1000/wayland-0; then
+        echo "VM2 has no active desktop session. Log in to its Ubuntu desktop first." >&2
+        exit 1
+    fi
+    printf -v receiver_command '%q ' \
+        env \
+        XDG_RUNTIME_DIR=/run/user/1000 \
+        WAYLAND_DISPLAY=wayland-0 \
+        SDL_VIDEODRIVER=wayland \
+        PULSE_SERVER=unix:/run/user/1000/pulse/native \
+        "$remote_flowshift" receive \
+        --bind "$vm2_data_ip" \
+        --port 9443 \
+        --output-dir received \
+        --play
+    printf -v sender_command '%q ' \
+        "$remote_flowshift" stream-send "$stream_video" \
+        --host "$vm2_data_ip" \
+        --bind "$vm1_data_ip" \
+        --port 9443 \
+        --config "$remote_config"
+else
+    printf -v check_source_command '%q ' test -f "$source_file"
+    if ! ssh "${ssh_options[@]}" "$vm1_ssh" "$check_source_command"; then
+        echo "Source file is not visible inside VM1: $source_file" >&2
+        exit 1
+    fi
+    printf -v receiver_command '%q ' \
+        "$remote_flowshift" receive \
+        --bind "$vm2_data_ip" \
+        --port 9443 \
+        --output-dir received
+    printf -v sender_command '%q ' \
+        "$remote_flowshift" send "$source_file" \
+        --host "$vm2_data_ip" \
+        --bind "$vm1_data_ip" \
+        --port 9443 \
+        --config "$remote_config"
+fi
+
+echo "Starting receiver on $vm2_ssh..."
+ssh "${ssh_options[@]}" "$vm2_ssh" "$receiver_command" &
+receiver_pid=$!
+
+cleanup() {
+    if kill -0 "$receiver_pid" 2>/dev/null; then
+        kill "$receiver_pid" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+sleep 1
+echo "Starting sender on $vm1_ssh..."
+ssh "${ssh_options[@]}" "$vm1_ssh" "$sender_command"
+wait "$receiver_pid"
+trap - EXIT INT TERM
+
+if [[ "$mode" == "stream" ]]; then
+    video_name="${stream_video##*/}"
+    echo "Stream completed. The restored stream is in VM2: ~/received/${video_name%.*}.ts"
+else
+    echo "Transfer completed. The restored file is in VM2: ~/received/"
+fi

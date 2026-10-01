@@ -1,0 +1,118 @@
+{
+  "workload_type": "streaming",
+  "profile": "120s-720p",
+  "duration_seconds": 120,
+  "width": 1280,
+  "height": 720,
+  "video_bitrate_kbps": 1200,
+  "audio_bitrate_kbps": 96,
+  "read_chunk_bytes": 32768,
+  "pseudorandom_generator": {
+    "algorithm": "hmac-sha256",
+    "seed": "e3282b655099db7eb4bfd540d8b78afc7718b48778c9f6809b4b523aa40f1473"
+  },
+  "delta_time_ms": {
+    "min": 250,
+    "max": 250
+  },
+  "policies": [
+    {
+      "name": "toward-file-transfer-25",
+      "target_sizes": [
+        936,
+        960,
+        1024,
+        1046
+      ],
+      "inter_packet_ms": [
+        2.907
+      ],
+      "target_frames_per_epoch": 43
+    },
+    {
+      "name": "toward-file-transfer-50",
+      "target_sizes": [
+        958,
+        981,
+        1028,
+        1046
+      ],
+      "inter_packet_ms": [
+        2.976
+      ],
+      "target_frames_per_epoch": 42
+    },
+    {
+      "name": "toward-file-transfer-75",
+      "target_sizes": [
+        980,
+        1002,
+        1032,
+        1045
+      ],
+      "inter_packet_ms": [
+        2.976
+      ],
+      "target_frames_per_epoch": 42
+    },
+    {
+      "name": "toward-file-transfer-100",
+      "target_sizes": [
+        1003,
+        1024,
+        1035,
+        1044
+      ],
+      "inter_packet_ms": [
+        3.049
+      ],
+      "target_frames_per_epoch": 41
+    }
+  ],
+  "derivation": {
+    "method": "capture-balanced-CICFlowMeter-v1",
+    "environment": "VPN",
+    "source_class": "Streaming",
+    "target_class": "File Transfer",
+    "source_capture_count": 4,
+    "target_capture_count": 7,
+    "source_flow_count": 98,
+    "target_flow_count": 539,
+    "source_size_quantiles_bytes": [
+      913,
+      938,
+      1021,
+      1047
+    ],
+    "target_size_quantiles_bytes": [
+      1003,
+      1024,
+      1035,
+      1044
+    ],
+    "source_median_capture_rate_bytes_per_second": 168364,
+    "source_median_capture_iat_ms": 6.33866,
+    "target_median_capture_iat_ms": 0.038582,
+    "assumed_application_rate_bytes_per_second": 162000,
+    "rate_basis": "configured media bitrate",
+    "link_capacity_bps": 250000000,
+    "epoch_ms": 250,
+    "modeled_frame_header_bytes": 40,
+    "strengths": [
+      0.25,
+      0.5,
+      0.75,
+      1.0
+    ],
+    "size_quantiles": [
+      0.1,
+      0.3,
+      0.7,
+      0.9
+    ],
+    "calibration_seed": 42,
+    "estimated_max_wire_to_application_byte_ratio": 1.081198,
+    "frame_slot_headroom_fraction": 0.02,
+    "csv_sha256": "284f62334635fae53923c385514c523569358e354d10ff980c15ba2d9052bc2c"
+  }
+}

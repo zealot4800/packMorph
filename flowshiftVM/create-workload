@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+output_dir="$base_dir/workloads"
+force=false
+mode=""
+profile=""
+
+usage() {
+    cat <<EOF
+Usage: $0 --file {500mb|1gb|2gb} [--output-dir DIR] [--force]
+       $0 --stream {60s|120s|180s} [--output-dir DIR] [--force]
+
+Create only the workload needed for one FlowShift experiment.
+
+Options:
+  --output-dir DIR  Destination directory (default: $base_dir/workloads)
+  --force           Replace an existing workload that does not validate
+  -h, --help        Show this help
+EOF
+}
+
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+while (($#)); do
+    case "$1" in
+        --file|--stream)
+            [[ -z "$mode" ]] || die "choose exactly one of --file or --stream"
+            (($# >= 2)) || die "$1 requires a profile"
+            mode="${1#--}"
+            profile="$2"
+            shift 2
+            ;;
+        --output-dir)
+            (($# >= 2)) || die "--output-dir requires a directory"
+            output_dir="$2"
+            shift 2
+            ;;
+        --force)
+            force=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            die "unknown argument: $1"
+            ;;
+    esac
+done
+
+[[ -n "$mode" ]] || { usage >&2; exit 2; }
+
+if [[ "$mode" == "file" ]]; then
+    case "$profile" in
+        500mb|1gb|2gb) ;;
+        *) die "file profile must be 500mb, 1gb, or 2gb" ;;
+    esac
+    config_name="file-transfer-$profile.json"
+    output_name="file-$profile.bin"
+else
+    case "$profile" in
+        60s|120s|180s) ;;
+        *) die "stream profile must be 60s, 120s, or 180s" ;;
+    esac
+    config_name="streaming-$profile-720p.json"
+    output_name="video-720p.mp4"
+fi
+
+config_path="$base_dir/configs/$config_name"
+[[ -f "$config_path" ]] || die "missing configuration: $config_path"
+command -v python3 >/dev/null || die "python3 is required"
+"$base_dir/flowshift" schedule --config "$config_path" --count 1 >/dev/null
+
+mkdir -p -- "$output_dir"
+output_dir="$(cd -- "$output_dir" && pwd)"
+output_path="$output_dir/$output_name"
+
+if [[ "$mode" == "file" ]]; then
+    expected_size="$(python3 -c \
+        'import json,sys; print(int(json.load(open(sys.argv[1]))["size_bytes"]))' \
+        "$config_path")"
+
+    if [[ -e "$output_path" ]]; then
+        actual_size="$(stat -c %s -- "$output_path" 2>/dev/null || true)"
+        if [[ -f "$output_path" && "$actual_size" == "$expected_size" ]]; then
+            echo "Workload already valid: $output_path ($expected_size bytes)"
+        elif [[ "$force" == true ]]; then
+            truncate -s "$expected_size" -- "$output_path"
+            echo "Replaced workload: $output_path ($expected_size bytes, sparse)"
+        else
+            die "$output_path exists but is not a $expected_size-byte regular file; use --force to replace it"
+        fi
+    else
+        truncate -s "$expected_size" -- "$output_path"
+        echo "Created workload: $output_path ($expected_size bytes, sparse)"
+    fi
+else
+    command -v ffmpeg >/dev/null || die "ffmpeg is required to create a streaming workload"
+    command -v ffprobe >/dev/null || die "ffprobe is required to validate a streaming workload"
+
+    mapfile -t video_settings < <(python3 -c '
+import json, sys
+document = json.load(open(sys.argv[1]))
+for key in ("width", "height", "video_bitrate_kbps", "audio_bitrate_kbps"):
+    print(int(document[key]))
+' "$config_path")
+    width="${video_settings[0]}"
+    height="${video_settings[1]}"
+    video_bitrate="${video_settings[2]}"
+    audio_bitrate="${video_settings[3]}"
+
+    valid_video=false
+    if [[ -f "$output_path" ]]; then
+        dimensions="$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height -of csv=p=0:s=x \
+            "$output_path" 2>/dev/null || true)"
+        audio_codec="$(ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_name -of default=nw=1:nk=1 \
+            "$output_path" 2>/dev/null || true)"
+        [[ "$dimensions" == "${width}x${height}" && -n "$audio_codec" ]] && valid_video=true
+    fi
+
+    if [[ "$valid_video" == true ]]; then
+        echo "Workload already valid: $output_path (${width}x${height}, with audio)"
+    else
+        [[ ! -e "$output_path" || "$force" == true ]] || \
+            die "$output_path is not a valid ${width}x${height} video with audio; use --force to replace it"
+        temp_video="$(mktemp --tmpdir="$output_dir" '.flowshift-video.XXXXXX.mp4')"
+        cleanup() {
+            rm -f -- "$temp_video"
+        }
+        trap cleanup EXIT INT TERM
+        echo "Creating a 10-second ${width}x${height} H.264/AAC source..."
+        ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i "testsrc2=size=${width}x${height}:rate=30" \
+            -f lavfi -i "sine=frequency=1000:sample_rate=48000" \
+            -t 10 -shortest \
+            -c:v libx264 -preset veryfast -pix_fmt yuv420p \
+            -b:v "${video_bitrate}k" -maxrate "${video_bitrate}k" \
+            -bufsize "$((video_bitrate * 2))k" \
+            -c:a aac -b:a "${audio_bitrate}k" \
+            -movflags +faststart "$temp_video"
+        mv -- "$temp_video" "$output_path"
+        trap - EXIT INT TERM
+        echo "Created workload: $output_path"
+    fi
+fi
+
+case "$output_path" in
+    "$base_dir"/*)
+        relative_path="${output_path#"$base_dir"/}"
+        vm_path="/mnt/flowshift/$relative_path"
+        echo
+        echo "Run it with:"
+        printf '  %q --%s %q %q\n' "$base_dir/run-vms" "$mode" "$profile" "$vm_path"
+        ;;
+    *)
+        echo
+        echo "Created outside the shared repository. Copy or mount it into VM1 before using run-vms."
+        ;;
+esac
