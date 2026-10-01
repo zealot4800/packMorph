@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import shutil
 import subprocess
 import tempfile
@@ -15,7 +16,7 @@ from threading import Event, Lock
 
 import numpy as np
 
-from .dataset import CACHE_SCHEMA_VERSION, SequenceDataset, SequenceRecord, from_records
+from .dataset import SequenceDataset, SequenceRecord, from_records
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ TSHARK_FIELDS = (
     "udp.srcport",
     "udp.dstport",
 )
-_EXTRACTOR_VERSION = 4
+_EXTRACTOR_VERSION = 7
 _PCAP_SUFFIXES = {".pcap", ".pcapng"}
 _MAX_FRAME_SIZE = int(np.iinfo(np.int32).max)
 Endpoint = tuple[str, int]
@@ -45,6 +46,7 @@ class _Flow:
     origin: Endpoint
     started_at: float
     last_timestamp: float
+    first_timestamp: float | None = None
     sizes: list[int] = field(default_factory=list)
     iats: list[float] = field(default_factory=list)
     chunk: int = 0
@@ -52,6 +54,15 @@ class _Flow:
 
 class _ExtractionCancelled(RuntimeError):
     pass
+
+
+class CorruptCaptureError(RuntimeError):
+    """A capture is damaged; any packets parsed before the error are unusable."""
+
+    def __init__(self, path: Path, detail: str) -> None:
+        self.path = path
+        self.detail = detail
+        super().__init__(f"tshark found a corrupt capture {path}: {detail}")
 
 
 class _ExtractionController:
@@ -124,6 +135,7 @@ def extraction_fingerprint(
             "flow_idle_timeout_seconds",
             "max_windows_per_capture",
             "tshark_binary",
+            "corrupt_capture_policy",
         )
     }
     manifest = []
@@ -138,7 +150,6 @@ def extraction_fingerprint(
             }
         )
     payload = {
-        "cache_schema": CACHE_SCHEMA_VERSION,
         "extractor_version": _EXTRACTOR_VERSION,
         "settings": extraction_settings,
         "pcaps": manifest,
@@ -197,16 +208,21 @@ def _record_from_flow(
 ) -> SequenceRecord | None:
     if len(flow.sizes) < min_packets:
         return None
+    flow_group = (
+        f"{key[0][0]}:{key[0][1]}-{key[1][0]}:{key[1][1]}-{key[2]}-"
+        f"{flow.started_at:.9f}"
+    )
     return SequenceRecord(
         sizes=np.asarray(flow.sizes, dtype=np.int32),
         iats=np.asarray(flow.iats, dtype=np.float32),
         environment=environment,
         category=category,
         group=group,
-        flow_id=(
-            f"{key[0][0]}:{key[0][1]}-{key[1][0]}:{key[1][1]}-{key[2]}-"
-            f"{flow.started_at:.9f}-{flow.chunk}"
-        ),
+        flow_id=f"{flow_group}-{flow.chunk}",
+        flow_group=flow_group,
+        start_offset=float((flow.first_timestamp if flow.first_timestamp is not None
+                            else flow.started_at) - flow.started_at),
+        flow_start_timestamp=float(flow.started_at),
     )
 
 
@@ -268,8 +284,13 @@ def extract_capture(
     aborted = False
     timestamp_watermark: float | None = None
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as error_log:
+        # System tshark must use system libraries; FPGA toolchain paths in the
+        # parent shell can supply an incompatible libstdc++.
+        tshark_environment = os.environ.copy()
+        tshark_environment.pop("LD_LIBRARY_PATH", None)
         process = subprocess.Popen(
             command,
+            env=tshark_environment,
             stdout=subprocess.PIPE,
             stderr=error_log,
             text=True,
@@ -323,6 +344,8 @@ def extract_capture(
                     flow = _Flow(
                         origin=endpoint, started_at=timestamp, last_timestamp=timestamp
                     )
+                if flow.first_timestamp is None:
+                    flow.first_timestamp = timestamp
                 iat = (
                     0.0 if not flow.sizes else max(timestamp - flow.last_timestamp, 0.0)
                 )
@@ -357,6 +380,12 @@ def extract_capture(
         stderr = error_log.read().strip()
         if not stopped_early and process.returncode != 0:
             detail = stderr[-2_000:] or "no error output"
+            error_text = stderr.lower()
+            if (
+                "appears to be damaged or corrupt" in error_text
+                or "appears to have been cut short" in error_text
+            ):
+                raise CorruptCaptureError(pcap_path, detail)
             raise RuntimeError(f"tshark failed for {pcap_path}: {detail}")
 
     if not stopped_early:
@@ -367,7 +396,7 @@ def extract_capture(
     return records[:maximum_windows] if maximum_windows is not None else records
 
 
-def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDataset:
+def extract_dataset(config: dict) -> SequenceDataset:
     data_config = config["data"]
     root = Path(data_config["root"])
     if not root.is_dir():
@@ -403,30 +432,26 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
         )
 
     starting_fingerprint = extraction_fingerprint(data_config, captures=tasks)
-    if fingerprint is not None and fingerprint != starting_fingerprint:
-        raise RuntimeError(
-            "The PCAP manifest changed before extraction began; retry extraction"
-        )
-
     logger.info(
         f"Extracting {len(tasks)} captures with {data_config['extraction_workers']} workers"
     )
 
     controller = _ExtractionController()
 
-    def run_task(task: CaptureTask) -> tuple[CaptureTask, list[SequenceRecord]]:
+    def run_task(task: CaptureTask) -> tuple[CaptureTask, list[SequenceRecord], str | None]:
         environment, category, path = task
-        return task, extract_capture(
-            path,
-            root,
-            environment,
-            category,
-            data_config,
-            controller=controller,
-        )
+        try:
+            records = extract_capture(
+                path, root, environment, category, data_config, controller=controller,
+            )
+        except CorruptCaptureError as error:
+            if data_config["corrupt_capture_policy"] == "error":
+                raise
+            return task, [], error.detail
+        return task, records, None
 
     executor = ThreadPoolExecutor(max_workers=int(data_config["extraction_workers"]))
-    futures: list[Future[tuple[CaptureTask, list[SequenceRecord]]]] = []
+    futures: list[Future[tuple[CaptureTask, list[SequenceRecord], str | None]]] = []
     try:
         futures = [executor.submit(run_task, task) for task in tasks]
         completed, _ = wait(futures, return_when=FIRST_EXCEPTION)
@@ -449,8 +474,15 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
         executor.shutdown(wait=True, cancel_futures=True)
 
     records: list[SequenceRecord] = []
+    excluded_captures: list[dict[str, str]] = []
     eligible_capture_counts = {pair: 0 for pair in expected_pairs}
-    for task, capture_records in results:
+    for task, capture_records, corruption_detail in results:
+        if corruption_detail is not None:
+            excluded_captures.append({
+                "capture": str(task[2].relative_to(root)),
+                "reason": corruption_detail,
+            })
+            continue
         records.extend(capture_records)
         if capture_records:
             eligible_capture_counts[(task[0], task[1])] += 1
@@ -460,6 +492,12 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
             task[1],
             task[2].name,
             len(capture_records),
+        )
+    if excluded_captures:
+        logger.warning(
+            "Excluded %d corrupt capture(s): %s",
+            len(excluded_captures),
+            ", ".join(item["capture"] for item in excluded_captures),
         )
 
     insufficient_eligible = [
@@ -474,13 +512,14 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
         )
         raise ValueError(
             "At least three captures per environment/class must produce eligible "
-            f"sequences; found {details}"
+            f"sequences; found {details}. Excluded corrupt captures: "
+            f"{', '.join(item['capture'] for item in excluded_captures) or 'none'}"
         )
 
     ending_fingerprint = extraction_fingerprint(data_config)
     if ending_fingerprint != starting_fingerprint:
         raise RuntimeError(
-            "The PCAP manifest changed during extraction; no cache was written. Retry extraction."
+            "The PCAP manifest changed during extraction; retry extraction."
         )
 
     dataset = from_records(
@@ -489,7 +528,6 @@ def extract_dataset(config: dict, fingerprint: str | None = None) -> SequenceDat
         list(data_config["environments"]),
         int(data_config["max_sequence_length"]),
         starting_fingerprint,
+        excluded_captures=tuple(excluded_captures),
     )
-    dataset.save(data_config["cache"])
-    logger.info("Saved %d sequences to %s", len(dataset), data_config["cache"])
     return dataset

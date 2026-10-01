@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [project.scripts]
-packmorph-sim = "packmorph.cli:main"
+packmorph-sim = "scripts.run_study:main"
 
 [tool.setuptools]
-packages = ["packmorph"]
-package-dir = {packmorph = "src"}
+packages = ["packmorph", "scripts"]
+package-dir = {packmorph = "src", scripts = "scripts"}

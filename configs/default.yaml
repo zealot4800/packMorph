@@ -1,19 +1,20 @@
-seed: 42
+# Single configuration for extraction, CNN training, five defenses, and CSV output.
+output_csv: ../results/comparison_policy_bank.csv
 
 data:
-  # Relative paths are resolved from this configuration file's directory.
-  # For a full-corpus study, use ../data and set max_windows_per_capture to null.
-  root: ../dataset_10
-  cache: ../artifacts/sequences.npz
+  # Relative to this file; the packet captures are in this repository's dataset tree.
+  root: ../dataset
   environments: ["Non VPN", "VPN"]
   categories: ["Streaming", "VoIP", "Chat", "C2", "File Transfer"]
   max_sequence_length: 128
   min_packets: 8
   flow_idle_timeout_seconds: 120.0
-  # Keep a bounded prefix of windows per capture; use null for exhaustive extraction.
-  max_windows_per_capture: 200
+  # Scan each complete capture so corruption near the end is detected.
+  max_windows_per_capture: null
   extraction_workers: 2
   tshark_binary: tshark
+  # Discard a complete damaged capture and record its path/reason in the results CSV.
+  corrupt_capture_policy: exclude
 
 split:
   test_fraction: 0.20
@@ -33,28 +34,83 @@ model:
   epochs: 15
   patience: 5
   validation_fraction: 0.15
-  # Independently initialized selectors reduce selector-specific overfitting.
-  selector_count: 2
-  surrogate_seed_offset: 1000
 
-morph:
-  # Optimize target-profile candidates under exact per-source target quotas.
-  # The exact guided assignment matrix is limited to dimension 512.
-  target_policy: balanced_guided
-  candidates_per_target: 4
-  # Fractions of the configured per-sequence padding and FCT allowances.
-  padding_fractions: [0.0, 0.5, 1.0]
-  fct_fractions: [0.0, 0.5, 1.0]
-  # Prefer lower-overhead Pareto candidates within this attack-utility gap.
-  attack_utility_tolerance: 0.01
-  # Scale normalized bandwidth and FCT in the Chebyshev resource cost.
-  bandwidth_cost_weight: 1.0
-  fct_cost_weight: 1.0
-  maximum_padding_ratio: 1.20
-  maximum_fct_ratio: 1.20
-  minimum_packet_size: 40
-  maximum_packet_size: 1514
-
-output:
-  # A completed run publishes only summary.json here.
-  directory: ../artifacts/experiment
+seeds: [42, 43, 44]
+budgets:
+  bandwidth_overhead: 0.20
+  sequence_duration_overhead: 0.20
+# Deadlines are supplied by an application contract, never inferred from a PCAP.
+qos:
+  link_capacity_bps: 250000000
+  class_defaults: {}
+  flow_contracts_csv: null
+methods:
+  front_adapted:
+    # Paper Section 4 presets; 514-byte dummy frames are the variable-size adaptation.
+    published:
+      FT-1: {minimum_dummy_packets: 1, client_dummy_packets: 1700, server_dummy_packets: 1700, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
+      FT-2: {minimum_dummy_packets: 1, client_dummy_packets: 2500, server_dummy_packets: 2500, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
+    candidates:
+      - {minimum_dummy_packets: 1, client_dummy_packets: 50, server_dummy_packets: 100, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
+      - {minimum_dummy_packets: 1, client_dummy_packets: 150, server_dummy_packets: 350, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
+      - {minimum_dummy_packets: 1, client_dummy_packets: 1700, server_dummy_packets: 1700, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
+  regulator_adapted:
+    # Paper Table 2; 514-byte dummy frames are the variable-size adaptation.
+    published:
+      Light: {orig_rate: 260.0, dep_rate: 0.860, budget: 2080, threshold: 3.75, upload_ratio: 4.02, delay_cap: 2.08, dummy_size_bytes: 514}
+      Heavy: {orig_rate: 277.0, dep_rate: 0.940, budget: 3550, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
+    candidates:
+      - {orig_rate: 277.0, dep_rate: 0.94, budget: 200, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
+      - {orig_rate: 277.0, dep_rate: 0.94, budget: 1000, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
+      - {orig_rate: 277.0, dep_rate: 0.94, budget: 3550, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
+  flowshift_manuscript:
+    # Build this bank once from training-class profiles for each environment/seed.
+    # Four target classes times twelve variants give 48 candidates per source class.
+    policy_variants:
+      - {name: size_low, size: 0.10, timing: 0.00, volume: 0.00}
+      - {name: size_medium, size: 0.25, timing: 0.00, volume: 0.00}
+      - {name: size_high, size: 0.50, timing: 0.00, volume: 0.00}
+      - {name: timing_low, size: 0.00, timing: 0.05, volume: 0.00}
+      - {name: timing_medium, size: 0.00, timing: 0.10, volume: 0.00}
+      - {name: timing_high, size: 0.00, timing: 0.25, volume: 0.00}
+      - {name: volume_low, size: 0.00, timing: 0.00, volume: 0.05}
+      - {name: volume_medium, size: 0.00, timing: 0.00, volume: 0.10}
+      - {name: volume_high, size: 0.00, timing: 0.00, volume: 0.25}
+      - {name: balanced_low, size: 0.10, timing: 0.05, volume: 0.05}
+      - {name: balanced_medium, size: 0.25, timing: 0.10, volume: 0.10}
+      - {name: balanced_high, size: 0.50, timing: 0.25, volume: 0.25}
+    published: {minimum_displacement: 0.0, maximum_bandwidth_overhead: 0.20, maximum_sequence_duration_overhead: 0.20, minimum_hold_seconds: 0.1, maximum_hold_seconds: 1.0, minimum_packet_size: 40, maximum_packet_size: 1514}
+    candidates:
+      - {minimum_displacement: 0.0, maximum_bandwidth_overhead: 0.10, maximum_sequence_duration_overhead: 0.10, minimum_hold_seconds: 0.1, maximum_hold_seconds: 1.0, minimum_packet_size: 40, maximum_packet_size: 1514}
+      - {minimum_displacement: 0.0, maximum_bandwidth_overhead: 0.20, maximum_sequence_duration_overhead: 0.20, minimum_hold_seconds: 0.1, maximum_hold_seconds: 1.0, minimum_packet_size: 40, maximum_packet_size: 1514}
+  ditto_adapted:
+    # The repository pattern is a prepared example, not a universal optimum.
+    example: {pattern: [533, 1066, 1600], maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
+    # Candidate states are fitted to pooled training packet sizes only.
+    candidates:
+      - {pattern_length: 3, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
+      - {pattern_length: 4, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
+      - {pattern_length: 5, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
+      - {pattern_length: 6, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
+  securitas_adapted:
+    # Trained policy; these are adaptation settings, not a published preset.
+    learned:
+      strategy_length: 128
+      policy_steps: 40
+      policy_learning_rate: 0.001
+      policy_hidden_units: 32
+      validation_every_steps: 5
+      validation_examples: 16
+      fragmentation_preference: 0.7
+      objective_weights: {confidence: 0.6, distance: 0.2, bandwidth: 0.2}
+      modeled_real_header_bytes: 40
+      modeled_fake_header_bytes: 40
+      icmp_observed_size_bytes: 70
+      icmp_reply_probability: 0.48
+      fake_ttl_min: 1
+      fake_ttl_max: 8
+      no_inbound_reply_max_delay_seconds: 0.05
+    # Only training/validation decide among these; final test labels are held out.
+    candidates:
+      - {policy_learning_rate: 0.001}
+      - {policy_learning_rate: 0.0005}
