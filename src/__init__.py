@@ -1,1 +1,1 @@
-"""PackMorph deep-learning simulation package."""
+"""Balanced-flow classification, transformations and policy evaluation."""

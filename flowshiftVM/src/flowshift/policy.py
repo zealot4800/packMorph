@@ -86,12 +86,10 @@ class FlowConfig:
         if len(names) != len(set(names)):
             raise ValueError("policy names must be unique")
         for policy in self.policies:
-            scheduled_delay = sum(
-                policy.inter_packet_ms[
-                    index % len(policy.inter_packet_ms)
-                ]
-                for index in range(policy.target_frames_per_epoch)
-            )
+            cycles, remainder = divmod(policy.target_frames_per_epoch,
+                                      len(policy.inter_packet_ms))
+            scheduled_delay = (cycles * sum(policy.inter_packet_ms)
+                               + sum(policy.inter_packet_ms[:remainder]))
             if scheduled_delay > self.delta_time_min_ms:
                 raise ValueError(
                     f"{policy.name}: packet-delay schedule ({scheduled_delay} ms) "

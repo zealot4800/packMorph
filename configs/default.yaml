@@ -1,116 +1,120 @@
-# Single configuration for extraction, CNN training, five defenses, and CSV output.
-output_csv: ../results/comparison_policy_bank.csv
+# Train and evaluate using the six balanced PKLs.
+output_dir: ..
 
 data:
-  # Relative to this file; the packet captures are in this repository's dataset tree.
+  # Dataset paths are relative to this configuration file.
   root: ../dataset
   environments: ["Non VPN", "VPN"]
   categories: ["Streaming", "VoIP", "Chat", "C2", "File Transfer"]
-  max_sequence_length: 128
-  min_packets: 8
-  flow_idle_timeout_seconds: 120.0
-  # Scan each complete capture so corruption near the end is detected.
-  max_windows_per_capture: null
-  extraction_workers: 2
-  tshark_binary: tshark
-  # Discard a complete damaged capture and record its path/reason in the results CSV.
-  corrupt_capture_policy: exclude
-
-split:
-  test_fraction: 0.20
 
 model:
-  # auto uses an available GPU and otherwise falls back to CPU.
-  # Use cpu or gpu to require a specific backend.
+  # Fixed input columns, in model input order, from the measured top-16 lists.
+  architecture: cic_prototypical
+  split_seed: 42
   device: cpu
-  conv_filters: [32, 64]
-  kernel_sizes: [7, 5]
-  context_filters: 48
-  dilations: [2, 4, 8, 16]
-  dense_units: 64
   dropout: 0.25
   learning_rate: 0.001
-  batch_size: 128
-  epochs: 15
-  patience: 5
-  validation_fraction: 0.15
+  batch_size: 512
+  episodes: 20000
+  queries_per_episode: 512
+  support_per_class: 5
+  calibration_support_per_class: 100
 
-seeds: [42, 43, 44]
-budgets:
-  bandwidth_overhead: 0.20
-  sequence_duration_overhead: 0.20
-# Deadlines are supplied by an application contract, never inferred from a PCAP.
-qos:
-  link_capacity_bps: 250000000
-  class_defaults: {}
-  flow_contracts_csv: null
-methods:
-  front_adapted:
-    # Paper Section 4 presets; 514-byte dummy frames are the variable-size adaptation.
-    published:
-      FT-1: {minimum_dummy_packets: 1, client_dummy_packets: 1700, server_dummy_packets: 1700, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
-      FT-2: {minimum_dummy_packets: 1, client_dummy_packets: 2500, server_dummy_packets: 2500, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
-    candidates:
-      - {minimum_dummy_packets: 1, client_dummy_packets: 50, server_dummy_packets: 100, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
-      - {minimum_dummy_packets: 1, client_dummy_packets: 150, server_dummy_packets: 350, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
-      - {minimum_dummy_packets: 1, client_dummy_packets: 1700, server_dummy_packets: 1700, minimum_window_seconds: 1.0, maximum_window_seconds: 14.0, dummy_size_bytes: 514}
-  regulator_adapted:
-    # Paper Table 2; 514-byte dummy frames are the variable-size adaptation.
-    published:
-      Light: {orig_rate: 260.0, dep_rate: 0.860, budget: 2080, threshold: 3.75, upload_ratio: 4.02, delay_cap: 2.08, dummy_size_bytes: 514}
-      Heavy: {orig_rate: 277.0, dep_rate: 0.940, budget: 3550, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
-    candidates:
-      - {orig_rate: 277.0, dep_rate: 0.94, budget: 200, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
-      - {orig_rate: 277.0, dep_rate: 0.94, budget: 1000, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
-      - {orig_rate: 277.0, dep_rate: 0.94, budget: 3550, threshold: 3.55, upload_ratio: 3.95, delay_cap: 1.77, dummy_size_bytes: 514}
-  flowshift_manuscript:
-    # Build this bank once from training-class profiles for each environment/seed.
-    # Four target classes times twelve variants give 48 candidates per source class.
-    policy_variants:
-      - {name: size_low, size: 0.10, timing: 0.00, volume: 0.00}
-      - {name: size_medium, size: 0.25, timing: 0.00, volume: 0.00}
-      - {name: size_high, size: 0.50, timing: 0.00, volume: 0.00}
-      - {name: timing_low, size: 0.00, timing: 0.05, volume: 0.00}
-      - {name: timing_medium, size: 0.00, timing: 0.10, volume: 0.00}
-      - {name: timing_high, size: 0.00, timing: 0.25, volume: 0.00}
-      - {name: volume_low, size: 0.00, timing: 0.00, volume: 0.05}
-      - {name: volume_medium, size: 0.00, timing: 0.00, volume: 0.10}
-      - {name: volume_high, size: 0.00, timing: 0.00, volume: 0.25}
-      - {name: balanced_low, size: 0.10, timing: 0.05, volume: 0.05}
-      - {name: balanced_medium, size: 0.25, timing: 0.10, volume: 0.10}
-      - {name: balanced_high, size: 0.50, timing: 0.25, volume: 0.25}
-    published: {minimum_displacement: 0.0, maximum_bandwidth_overhead: 0.20, maximum_sequence_duration_overhead: 0.20, minimum_hold_seconds: 0.1, maximum_hold_seconds: 1.0, minimum_packet_size: 40, maximum_packet_size: 1514}
-    candidates:
-      - {minimum_displacement: 0.0, maximum_bandwidth_overhead: 0.10, maximum_sequence_duration_overhead: 0.10, minimum_hold_seconds: 0.1, maximum_hold_seconds: 1.0, minimum_packet_size: 40, maximum_packet_size: 1514}
-      - {minimum_displacement: 0.0, maximum_bandwidth_overhead: 0.20, maximum_sequence_duration_overhead: 0.20, minimum_hold_seconds: 0.1, maximum_hold_seconds: 1.0, minimum_packet_size: 40, maximum_packet_size: 1514}
-  ditto_adapted:
-    # The repository pattern is a prepared example, not a universal optimum.
-    example: {pattern: [533, 1066, 1600], maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
-    # Candidate states are fitted to pooled training packet sizes only.
-    candidates:
-      - {pattern_length: 3, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
-      - {pattern_length: 4, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
-      - {pattern_length: 5, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
-      - {pattern_length: 6, maximum_packet_size: 1600, rate_packets_per_second: 64.0, observation_horizon_seconds: 10.0, link_capacity_bps: 1000000000.0, queue_limit_packets: 128, phase_slots: 0}
-  securitas_adapted:
-    # Trained policy; these are adaptation settings, not a published preset.
-    learned:
-      strategy_length: 128
-      policy_steps: 40
-      policy_learning_rate: 0.001
-      policy_hidden_units: 32
-      validation_every_steps: 5
-      validation_examples: 16
-      fragmentation_preference: 0.7
-      objective_weights: {confidence: 0.6, distance: 0.2, bandwidth: 0.2}
-      modeled_real_header_bytes: 40
-      modeled_fake_header_bytes: 40
-      icmp_observed_size_bytes: 70
-      icmp_reply_probability: 0.48
-      fake_ttl_min: 1
-      fake_ttl_max: 8
-      no_inbound_reply_max_delay_seconds: 0.05
-    # Only training/validation decide among these; final test labels are held out.
-    candidates:
-      - {policy_learning_rate: 0.001}
-      - {policy_learning_rate: 0.0005}
+  features:
+    Non VPN:
+      - pkt_len_min
+      - bwd_pkt_len_min
+      - fwd_pkt_len_min
+      - pkt_len_std
+      - bwd_pkt_len_mean
+      - fwd_pkt_len_max
+      - bwd_pkt_len_max
+      - fwd_pkt_len_std
+      - fwd_iat_std
+      - bwd_iat_std
+      - pkt_len_mean
+      - fwd_pkt_len_mean
+      - bwd_pkts_s
+      - bwd_pkt_len_std
+      - tot_bwd_pkts
+      - down_up_ratio
+    VPN:
+      - pkt_len_mean
+      - pkt_len_std
+      - fwd_pkt_len_std
+      - down_up_ratio
+      - fwd_pkt_len_mean
+      - bwd_pkt_len_mean
+      - fwd_pkts_b_avg
+      - bwd_pkt_len_std
+      - bwd_pkt_len_min
+      - totlen_bwd_pkts
+      - fwd_iat_std
+      - totlen_fwd_pkts
+      - fwd_blk_rate_avg
+      - tot_bwd_pkts
+      - pkt_len_min
+      - fwd_pkt_len_max
+
+obfuscation:
+  # Generator parameters; cached comparisons must match these settings.
+  # Fresh generation additionally needs flow_context alongside each PKL's X.
+  flowshift:
+    # Offline aggregate adaptation: caps apply to each flow, not just totals.
+    # max_fct_fraction bounds modeled timestamp span, not measured network FCT.
+    # Holding bounds sample an added-span allowance; VM epochs are separate.
+    strengths: [0.25, 0.5, 0.75, 1.0]
+    min_displacement: 0.05
+    max_extra_byte_fraction: 0.20
+    max_fct_fraction: 0.15
+    holding_time_ms: [250, 1000]
+  # BLANKET-inspired aggregate policy: training-only fitting, validation checkpoint.
+  # Accuracy-first validation selection; smaller penalties allow more overhead.
+  blanket:
+    iterations: 60
+    population: 32
+    batch_size: 256
+    byte_penalty: 0.01
+    duration_penalty: 0.01
+  # Isolated Ditto carrier windows; continuous cover is costly per source flow.
+  # Pattern and estimated virtual-carrier rate use training traffic only.
+  ditto:
+    pattern_length: 3
+    target_utilization: 0.7
+  minipatch:
+    # Service-specific black-box fitting; validation selection, never test fitting.
+    max_patches: 8
+    max_patch_packets: 64
+    iterations: 45
+    max_queries: 1536
+    fit_flows_per_service: 64
+    success_threshold: 1.0
+    dummy_bytes: 512
+  minos:
+    # Validation-selected service-classification adaptation of the morphing module.
+    # Includes random padding; proxy encryption/header and tunnel mixing are excluded.
+    front_window: 1000
+    insertion_probability: 0.6
+    padding_max_bytes: 0
+    dummy_bytes: 64
+    # Selected by capture-balanced validation accuracy over supported profiles.
+    environments:
+      Non VPN:
+        padding_max_bytes: 32
+        dummy_bytes: 1500
+      VPN:
+        front_window: 500
+  securitas:
+    # Extended aggregate action space; repeated fakes are opt-in per environment.
+    iterations: 120
+    population: 32
+    batch_size: 64
+    byte_penalty: 0.01
+    similarity_reward: 0.2
+    fragment_probability: 0.7
+    icmp_probability: 0.48
+    environments:
+      Non VPN:
+        iterations: 40
+        population: 16
+        fake_copies: 8

@@ -5,6 +5,6 @@ __pycache__/
 .env.*
 !.env.example
 *.egg-info/
-dataset/
 results/
 papers/
+docs/*

@@ -1,1 +1,1 @@
-"""Small command-line helpers kept outside the simulation package."""
+"""Command entry points for the balanced-PKL workflow."""
