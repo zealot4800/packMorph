@@ -6,6 +6,14 @@ import numpy as np
 
 def capture_macro_accuracy(labels, predicted, captures, class_count):
     """Give each class equal weight and each capture equal weight within class."""
+    if captures is None:
+        scores = []
+        for label in range(class_count):
+            selected = labels == label
+            if not np.any(selected):
+                raise ValueError('No validation examples for one or more classes')
+            scores.append(np.mean(predicted[selected] == label))
+        return float(np.mean(scores))
     # Group by class and capture together; capture names need not be globally unique.
     _, capture_ids = np.unique(captures, return_inverse=True)
     groups, inverse = np.unique(np.column_stack((labels, capture_ids)),
@@ -34,5 +42,7 @@ def evaluate(model, features, labels, captures, class_names, batch_size):
     return dict(accuracy=float(np.mean(predicted == labels)),
                 balanced_accuracy=float(np.mean([c['recall'] for c in per_class])),
                 macro_f1=float(np.mean([c['f1'] for c in per_class])),
-                capture_macro_accuracy=capture_macro_accuracy(labels, predicted, captures, len(class_names)),
-                per_class=per_class, flows=len(labels), captures=len(np.unique(captures)))
+                capture_macro_accuracy=(None if captures is None else
+                    capture_macro_accuracy(labels, predicted, captures, len(class_names))),
+                per_class=per_class, flows=len(labels),
+                captures=None if captures is None else len(np.unique(captures)))

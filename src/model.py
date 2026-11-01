@@ -10,8 +10,39 @@ from .metrics import capture_macro_accuracy
 from .runtime import _tensorflow, prepare_runtime
 
 
+@dataclass
+class CheckpointSelection:
+    """Track actual best weights separately from meaningful stopping progress."""
+
+    patience: int
+    min_delta: float
+    best_score: float = -np.inf
+    best_episode: int = 0
+    progress_score: float = -np.inf
+    stale_checks: int = 0
+    lr_stale_checks: int = 0
+
+    def observe(self, episode: int, score: float) -> bool:
+        if not np.isfinite(score):
+            raise RuntimeError('Validation produced a nonfinite selection score')
+        improved = score > self.best_score
+        if improved:
+            self.best_score, self.best_episode = score, episode
+        if score > self.progress_score + self.min_delta:
+            self.progress_score = score
+            self.stale_checks = self.lr_stale_checks = 0
+        else:
+            self.stale_checks += 1
+            self.lr_stale_checks += 1
+        return improved
+
+    @property
+    def should_stop(self) -> bool:
+        return self.stale_checks >= self.patience
+
+
 def build_embedding(config: dict, feature_count: int):
-    """Four 64-unit ReLU layers; 25% dropout after layers two and three."""
+    """Four 64-unit ReLU layers; configured dropout after layers two and three."""
     tf = _tensorflow()
     inputs = tf.keras.Input(shape=(feature_count,), name="cic_flow_features")
     x = inputs
@@ -36,6 +67,8 @@ def _class_pools(labels: np.ndarray, class_count: int) -> list[np.ndarray]:
 def _capture_weights(captures: np.ndarray,
                      pool: np.ndarray) -> np.ndarray:
     """Give each source CSV equal total probability within its class."""
+    if captures is None:
+        return np.full(len(pool), 1.0 / len(pool))
     _, inverse, counts = np.unique(captures[pool], return_inverse=True,
                                     return_counts=True)
     weights = 1.0 / counts[inverse]
@@ -54,23 +87,27 @@ def _support_rows(labels: np.ndarray, class_count: int, config: dict,
     ])
 
 
-def _validation_score(model, training: np.ndarray, training_labels: np.ndarray,
+def _checkpoint_scores(model, training: np.ndarray, training_labels: np.ndarray,
                       support_rows: np.ndarray, validation: np.ndarray,
                       validation_labels: np.ndarray, validation_captures: np.ndarray,
-                      class_count: int, batch_size: int) -> float:
-    """Mean capture accuracy within each class, then mean across classes."""
+                      class_count: int, batch_size: int,
+                      training_captures: np.ndarray | None) -> dict:
+    """Evaluate one frozen calibration classifier; only validation selects weights."""
     classifier = _fit_support(model, training, training_labels, support_rows,
                               class_count, batch_size)
     predicted = classifier.predict_probabilities(validation, batch_size).argmax(axis=1)
-    return capture_macro_accuracy(validation_labels, predicted,
-                                  validation_captures, class_count)
+    train_predicted = classifier.predict_probabilities(training, batch_size).argmax(axis=1)
+    return dict(validation_score=capture_macro_accuracy(
+        validation_labels, predicted, validation_captures, class_count),
+        train_score=capture_macro_accuracy(
+        training_labels, train_predicted, training_captures, class_count))
 
 
 def train_embedding(features: np.ndarray, labels: np.ndarray,
                     class_count: int, config: dict,
                     captures: np.ndarray,
                     validation: tuple[np.ndarray, np.ndarray, np.ndarray]):
-    """Train episodically, balancing queries across the five classes."""
+    """Train episodically, balancing queries across the configured service classes."""
     seed = config["split_seed"]
     prepare_runtime(seed, config["device"])
     tf = _tensorflow()
@@ -82,12 +119,16 @@ def train_embedding(features: np.ndarray, labels: np.ndarray,
     pool_weights = [_capture_weights(captures, pool) for pool in pools]
     if any(len(pool) < support_size + 1 for pool in pools):
         raise ValueError(f"CICFlowMeter training needs more than {support_size} examples per class")
-    optimizer = tf.keras.optimizers.Adam(config["learning_rate"])
+    optimizer = tf.keras.optimizers.Adam(
+        config["learning_rate"], weight_decay=config['weight_decay'],
+        global_clipnorm=config['gradient_clipnorm'])
     checkpoint_support_rows = _support_rows(labels, class_count, config, captures)
-    best_score = -np.inf
-    best_episode = 0
+    selection = CheckpointSelection(config['early_stopping_patience'], config['min_delta'])
     best_weights = None
-    checkpoint_interval = 1000
+    checkpoint_interval = config['validation_interval']
+    history = []
+    interval_loss = 0.0
+    interval_steps = 0
 
     @tf.function(reduce_retracing=True)
     def step(support, query, query_labels):
@@ -102,6 +143,8 @@ def train_embedding(features: np.ndarray, labels: np.ndarray,
             loss = tf.reduce_mean(tf.keras.losses.sparse_categorical_crossentropy(
                 query_labels, -distances, from_logits=True))
         gradients = tape.gradient(loss, model.trainable_variables)
+        for gradient in gradients:
+            tf.debugging.assert_all_finite(gradient, 'Training gradient is nonfinite')
         optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         return loss
 
@@ -128,20 +171,46 @@ def train_embedding(features: np.ndarray, labels: np.ndarray,
         loss = step(features[support_rows], features[query_rows], labels[query_rows])
         if not bool(tf.math.is_finite(loss)):
             raise RuntimeError("CICFlowMeter episodic training produced a nonfinite loss")
+        interval_loss += float(loss)
+        interval_steps += 1
         if ((episode + 1) % checkpoint_interval == 0
                 or episode + 1 == config["episodes"]):
-            score = _validation_score(
+            scores = _checkpoint_scores(
                 model, features, labels, checkpoint_support_rows, *validation,
-                class_count, config["batch_size"])
-            print(f"  episode {episode + 1}/{config["episodes"]}: validation capture macro accuracy={score:.4f}", flush=True)
-            if score > best_score:
-                best_score = score
-                best_episode = episode + 1
+                class_count, config["batch_size"], captures)
+            score = scores['validation_score']
+            improved = selection.observe(episode + 1, score)
+            current_lr = float(optimizer.learning_rate.numpy())
+            history.append(dict(episode=episode + 1, train_loss=interval_loss / interval_steps,
+                                learning_rate=current_lr, **scores))
+            interval_loss = 0.0
+            interval_steps = 0
+            metric_name = 'class macro accuracy' if captures is None else 'capture macro accuracy'
+            print(f"  episode {episode + 1}/{config['episodes']}: "
+                  f"loss={history[-1]['train_loss']:.4f}; train {metric_name}={scores['train_score']:.4f}; "
+                  f"validation={score:.4f}; lr={current_lr:.3g}; "
+                  f"patience={selection.stale_checks}/{selection.patience}", flush=True)
+            if improved:
                 best_weights = model.get_weights()
+            if selection.should_stop:
+                print(f'  Early stopping; restoring episode {selection.best_episode}.', flush=True)
+                break
+            if selection.lr_stale_checks >= config['lr_patience']:
+                reduced_lr = max(config['min_learning_rate'], current_lr * config['lr_factor'])
+                optimizer.learning_rate.assign(min(current_lr, reduced_lr))
+                selection.lr_stale_checks = 0
+    if best_weights is None:
+        raise RuntimeError('Training did not produce a valid validation checkpoint')
     model.set_weights(best_weights)
-    return model, {"episode": best_episode,
-                   "validation_capture_macro_accuracy": best_score,
-                   "checkpoint_interval": checkpoint_interval}
+    metric_key = ('validation_macro_accuracy' if captures is None
+                  else 'validation_capture_macro_accuracy')
+    return model, {"episode": selection.best_episode,
+                   metric_key: selection.best_score,
+                   "checkpoint_interval": checkpoint_interval,
+                   "episodes_run": episode + 1,
+                   "stopped_early": episode + 1 < config['episodes'],
+                   "stop_reason": 'validation_plateau' if selection.should_stop else 'episode_limit',
+                   "history": history}
 
 
 @dataclass(slots=True)

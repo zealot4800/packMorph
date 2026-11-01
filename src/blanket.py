@@ -12,13 +12,14 @@ import json
 
 import numpy as np
 
+from .transform import model_columns, model_statistics
 from .transform import (DIRECTIONS, FEATURE_NAMES, FlowPolicy, _context_rows,
                         transform_flow, validate_policy_parameters)
 
 
 class Blanket(FlowPolicy):
     name = 'blanket'
-    VERSION = 'blanket-flow-v3'
+    VERSION = 'blanket-flow-v4'
     required = {'iterations': 'positive_count', 'population': 'positive_count',
                 'batch_size': 'positive_count', 'byte_penalty': 'nonnegative',
                 'duration_penalty': 'nonnegative'}
@@ -80,12 +81,14 @@ class Blanket(FlowPolicy):
             self.insertions[direction] = ((int(sizes[i]), added),)
         result = transform_flow(row, self, FEATURE_NAMES)
         if not self._padding.any() and not gaps.any() and scale == 1:
-            return {name: float(row[name]) for name in FEATURE_NAMES}
+            return model_statistics(row)
         payload += real * self._padding[0] + dummy * (sizes[0] - row['dummy_header_bytes'])
         result['fwd_byts_b_avg'] = payload / bulks if bulks else 0.
         result['fwd_pkts_b_avg'] = (real + dummy) / bulks if bulks else 0.
         result['fwd_blk_rate_avg'] = payload / (elapsed * scale) if elapsed else 0.
-        return result
+        # Fitting needs byte/duration totals as well as the configured model inputs.
+        # Project to self.columns only in __call__, after accounting for overhead.
+        return model_statistics(row, result)
 
     def edits(self, direction, count, mean):
         return self._padding[DIRECTIONS.index(direction)], self.insertions[direction]
@@ -101,7 +104,7 @@ class Blanket(FlowPolicy):
             self._costs[4] += added_time / old_time
             self._costs[5] += 1
         self._costs[6] = max(self._costs[6], added_time)
-        return {name: result[name] for name in self.columns}
+        return model_columns(row, result, self.columns)
 
     @property
     def overhead(self):

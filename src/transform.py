@@ -1,7 +1,7 @@
 """Shared flow validation, bounded aggregate edits and method dispatch.
 
 Times are seconds and size variances are population variances. Model outputs
-stay N-by-16 and require supporting flow_context. Timing and bulk membership
+follow the configured feature count and require supporting flow_context. Timing and bulk membership
 remain aggregate modeling assumptions.
 """
 from __future__ import annotations
@@ -28,6 +28,47 @@ FEATURE_NAMES = (
     "tot_fwd_pkts", "tot_bwd_pkts", "totlen_fwd_pkts", "totlen_bwd_pkts",
     "flow_pkts_s", "bwd_pkts_s", "down_up_ratio",
 )
+EXTRA_FEATURE_NAMES = (
+    'pkt_len_max', 'pkt_len_var', 'flow_byts_s', 'fwd_pkts_s', 'pkt_size_avg',
+    'fwd_seg_size_avg', 'bwd_seg_size_avg', 'subflow_fwd_pkts', 'subflow_bwd_pkts',
+    'subflow_fwd_byts', 'subflow_bwd_byts',
+    'fwd_header_len', 'bwd_header_len', 'fwd_seg_size_min',
+)
+SUPPORTED_FEATURE_NAMES = FEATURE_NAMES + EXTRA_FEATURE_NAMES
+
+
+def model_statistics(row: Mapping, result: Mapping | None = None) -> dict:
+    """Extend aggregate statistics with CIC size/rate aliases and IP headers.
+
+    Subflow fields follow this adapter's single-flow convention. Segment-size
+    averages and packet-size averages alias directional and overall IP lengths.
+    Added packets use 20-byte IPv4 headers, matching the existing dummy model.
+    """
+    values = {name: float((row if result is None else result)[name]) for name in FEATURE_NAMES}
+    duration = values['flow_duration']
+    values.update(pkt_len_max=max(values[f'{d}_pkt_len_max'] for d in DIRECTIONS),
+                  pkt_len_var=values['pkt_len_std'] ** 2,
+                  flow_byts_s=sum(values[f'totlen_{d}_pkts'] for d in DIRECTIONS) / duration if duration else 0.,
+                  fwd_pkts_s=values['tot_fwd_pkts'] / duration if duration else 0.,
+                  pkt_size_avg=values['pkt_len_mean'])
+    for d in DIRECTIONS:
+        values[f'{d}_seg_size_avg'] = values[f'{d}_pkt_len_mean']
+        values[f'subflow_{d}_pkts'] = values[f'tot_{d}_pkts']
+        values[f'subflow_{d}_byts'] = values[f'totlen_{d}_pkts']
+        header = f'{d}_header_len'
+        if header in row:
+            added = values[f'tot_{d}_pkts'] - float(row[f'tot_{d}_pkts'])
+            values[header] = max(0., float(row[header]) + 20 * added)
+    if 'fwd_seg_size_min' in row:
+        added = values['tot_fwd_pkts'] > float(row['tot_fwd_pkts'])
+        old_min = float(row['fwd_seg_size_min'])
+        values['fwd_seg_size_min'] = min(old_min, 20.) if added and old_min else (20. if added else old_min)
+    return values
+
+
+def model_columns(row: Mapping, result: Mapping, columns: Sequence[str]) -> dict:
+    values = model_statistics(row, result)
+    return {name: values[name] for name in columns}
 
 
 def _number(value: object) -> bool:
@@ -64,14 +105,6 @@ def validate_policy_parameters(strategy: str, parameters: dict, required: dict,
             valid = type(value) is int and value >= 1
         elif kind in {"size", "size_zero"}:
             valid = _size(value, 0 if kind == "size_zero" else 1)
-        elif kind == 'strengths':
-            valid = (isinstance(value, list) and bool(value)
-                     and all(_number(s) and 0 < s <= 1 for s in value)
-                     and len(set(value)) == len(value))
-        elif kind == 'bounds':
-            valid = (isinstance(value, list) and len(value) == 2
-                     and all(type(v) is int and v >= 1 for v in value)
-                     and value[0] <= value[1])
         else:
             raise ValueError(f'Unknown policy validation rule: {kind}')
         if not valid:
@@ -328,9 +361,11 @@ def _context_rows(data: FlowDataset, context: Mapping | Sequence | None) -> Iter
     """Combine model inputs with supplied context, preserving original precision."""
     required = set(FEATURE_NAMES)
     model_fields = set(data.feature_names)
-    if (data.features.shape != (len(data), 16) or len(data.feature_names) != 16
-            or len(model_fields) != 16 or not model_fields <= required):
-        raise ValueError('Transformations require 16 supported model features in order')
+    if (data.features.shape != (len(data), len(data.feature_names))
+            or not 1 <= len(data.feature_names) <= 35
+            or len(model_fields) != len(data.feature_names) or not model_fields <= set(SUPPORTED_FEATURE_NAMES)):
+        raise ValueError('Transformations require 1 to 35 distinct supported model features in order; '
+                         'unsupported features: ' + ', '.join(sorted(model_fields - set(SUPPORTED_FEATURE_NAMES))))
     if isinstance(context, Mapping):
         if any(len(column) != len(data) for column in context.values()):
             raise ValueError('Flow context columns must have one value per PKL row')
@@ -350,7 +385,10 @@ def _context_rows(data: FlowDataset, context: Mapping | Sequence | None) -> Iter
         if missing:
             raise ValueError('Fresh transformations need flow_context with missing statistics: '
                              + ', '.join(sorted(missing)))
-        values = {name: float(row[name]) for name in FEATURE_NAMES}
+        values = model_statistics(row)
+        if not model_fields <= values.keys():
+            raise ValueError('Fresh transformations need flow_context for: '
+                             + ', '.join(sorted(model_fields - values.keys())))
         if any(not math.isfinite(value) or value < 0 for value in values.values()):
             raise ValueError(f'Flow context must be finite and nonnegative at PKL row {i}')
         if not np.array_equal(np.asarray([values[n] for n in data.feature_names], dtype=np.float32),
@@ -382,21 +420,18 @@ def validate_parameters(strategy: str, parameters: dict, source: str) -> dict:
 
 def transform_dataset(data: FlowDataset, method: str, parameters: dict, *,
                       context: Mapping | Sequence | None = None,
-                      training: FlowDataset | None = None,
-                      training_context: Mapping | Sequence | None = None,
                       seed: int = 42, fitted_policy=None, summary: dict | None = None) -> np.ndarray:
-    """Generate fresh features without classifier queries during transformation.
+    """Generate fresh features without evaluation-classifier queries.
 
     ``context`` is a column-to-array mapping or a sequence of row dictionaries.
-    Counts/duration cannot be recovered reliably from the 16 model features.
-    FlowShift additionally needs train.pkl and its context to fit target profiles.
-    Blanket, MiniPatch, Ditto and Securitas require fitted policies from the caller.
+    Counts/duration cannot be recovered reliably from the model features alone.
+    FlowShift, Blanket, MiniPatch, Ditto and Securitas require fitted policies from the caller.
     Minos requires packet-derived front-window coefficients in flow_context.
     Original row order, labels and flow identities are retained by the caller.
     """
     policy_class = _policy_class(method)
     rows = _context_rows(data, context)
-    if method in ('blanket', 'minipatch', 'ditto', 'securitas'):
+    if method in ('flowshift', 'blanket', 'minipatch', 'ditto', 'securitas'):
         if (not isinstance(fitted_policy, policy_class)
                 or fitted_policy.parameters != parameters
                 or fitted_policy.columns != data.feature_names or fitted_policy.seed != seed):
@@ -404,41 +439,22 @@ def transform_dataset(data: FlowDataset, method: str, parameters: dict, *,
         fitted_policy.reset()
     elif method == 'minos':
         policy = policy_class(parameters, data.feature_names, seed)
-    elif method == 'flowshift':
-        policy_class.validate(parameters, 'transformation')
-        if training is None:
-            raise ValueError('FlowShift needs train.pkl and its flow context')
-        if (training.feature_names != data.feature_names or training.class_names != data.class_names
-                or training.source_fingerprint != data.source_fingerprint):
-            raise ValueError('FlowShift training data must match the input environment and features')
-        from .policy import Profiles
-
-        try:
-            profiles = Profiles.fit(training, _context_rows(training, training_context))
-        except (ValueError, TypeError, KeyError) as error:
-            raise ValueError(f'FlowShift train.pkl flow_context: {error}') from error
-        transforms = {}
     def values():
         for i, row in enumerate(rows):
-            if method == 'flowshift':
-                label = int(data.labels[i])
-                if label not in transforms:
-                    transforms[label] = policy_class(profiles, data.class_names[label], parameters, str(seed))
-                output = transforms[label](row)
-            elif method in ('blanket', 'ditto', 'securitas'):
+            if method in ('flowshift', 'blanket', 'ditto', 'securitas'):
                 output = fitted_policy(row)
             elif method == 'minipatch':
                 output = fitted_policy(row, data.class_names[int(data.labels[i])])
             elif method == 'minos':
                 output = policy(row)
-            # Both adapters return the configured model columns in order.
+            # Each adapter returns the configured model columns in order.
             yield from output.values()
 
-    result = np.fromiter(values(), dtype=np.float32, count=len(data) * 16).reshape(len(data), 16)
+    result = np.fromiter(values(), dtype=np.float32, count=len(data) * len(data.feature_names)).reshape(len(data), len(data.feature_names))
     if not np.isfinite(result).all() or np.any(result < 0):
         raise ValueError('Transformation produced invalid model features')
     if method == 'minos' and summary is not None:
         summary.update(policy.report)
-    elif method == 'flowshift' and summary is not None:
-        summary.update(policy_class.summarize(transforms.values()))
+    if method == 'flowshift' and summary is not None:
+        summary.update(diagnostics=dict(fitted_policy.diagnostics))
     return result

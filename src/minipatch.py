@@ -12,6 +12,7 @@ import json
 
 import numpy as np
 
+from .transform import model_columns, model_statistics
 from .transform import (DIRECTIONS, FEATURE_NAMES, SizeMoments, _context_rows,
                         flow_statistics, forward_bulk_statistics, payload_segments,
                         validate_policy_parameters)
@@ -107,34 +108,7 @@ class Minipatch:
         self._totals = np.zeros(5, dtype=np.float64)
 
     def _apply(self, row, patches):
-        tails, segments, iat = self._metadata(row)
-        insertions = {}
-        for position, length in patches:
-            if not length:
-                continue
-            direction = int(length < 0)
-            region, timestamp = tails[direction, position]
-            if region >= 0 and region not in insertions:
-                insertions[region] = (direction, abs(length), timestamp)
-        if not insertions:
-            return {n: float(row[n]) for n in FEATURE_NAMES}
-        values = {n: float(row[n]) for n in FEATURE_NAMES}
-        summaries = [SizeMoments.from_values(values, d) for d in DIRECTIONS]
-        size = self.parameters['dummy_bytes']
-        dummy = np.asarray([[region + .5, d, k, k * (size - row['dummy_header_bytes']), t, t]
-                            for region, (d, k, t) in insertions.items()])
-        for direction, summary in enumerate(summaries):
-            count = sum(k for d, k, _ in insertions.values() if d == direction)
-            summary.merge(SizeMoments.constant(count, size))
-        result = flow_statistics(values, summaries, values['flow_duration'])
-        for direction, name in enumerate(DIRECTIONS):
-            intervals = summaries[direction].count - 1
-            total, squared = iat[direction]
-            variance = squared / intervals - (total / intervals) ** 2 if intervals > 0 else 0.
-            result[f'{name}_iat_std'] = np.sqrt(max(0., variance))
-        events = np.concatenate((segments, dummy))
-        result.update(forward_bulk_statistics(events))
-        return result
+        return model_statistics(row, apply_burst_insertions(row, patches, self.parameters['dummy_bytes']))
 
     def __call__(self, row, service):
         if self.artifact is None or service not in self.artifact['patches']:
@@ -145,7 +119,7 @@ class Minipatch:
         added = sum(result[f'tot_{d}_pkts'] - float(row[f'tot_{d}_pkts']) for d in DIRECTIONS)
         packets = sum(float(row[f'tot_{d}_pkts']) for d in DIRECTIONS)
         self._totals += (1, before, after, added, packets)
-        return {n: result[n] for n in self.columns}
+        return model_columns(row, result, self.columns)
 
     @property
     def overhead(self):
@@ -314,3 +288,34 @@ class Minipatch:
         artifact['fingerprint'] = hashlib.sha256(signature.encode() + json.dumps(learned, sort_keys=True).encode()).hexdigest()
         cls.verify(artifact, signature, training.class_names, parameters)
         return artifact
+
+
+def apply_burst_insertions(row, patches, dummy_bytes):
+    tails, segments, iat = Minipatch._metadata(row)
+    insertions = {}
+    for position, length in patches:
+        if not length:
+            continue
+        direction = int(length < 0)
+        region, timestamp = tails[direction, position]
+        if region >= 0 and region not in insertions:
+            insertions[region] = (direction, abs(length), timestamp)
+    if not insertions:
+        return {n: float(row[n]) for n in FEATURE_NAMES}
+    values = {n: float(row[n]) for n in FEATURE_NAMES}
+    summaries = [SizeMoments.from_values(values, d) for d in DIRECTIONS]
+    size = dummy_bytes
+    dummy = np.asarray([[region + .5, d, k, k * (size - row['dummy_header_bytes']), t, t]
+                        for region, (d, k, t) in insertions.items()])
+    for direction, summary in enumerate(summaries):
+        count = sum(k for d, k, _ in insertions.values() if d == direction)
+        summary.merge(SizeMoments.constant(count, size))
+    result = flow_statistics(values, summaries, values['flow_duration'])
+    for direction, name in enumerate(DIRECTIONS):
+        intervals = summaries[direction].count - 1
+        total, squared = iat[direction]
+        variance = squared / intervals - (total / intervals) ** 2 if intervals > 0 else 0.
+        result[f'{name}_iat_std'] = np.sqrt(max(0., variance))
+    events = np.concatenate((segments, dummy))
+    result.update(forward_bulk_statistics(events))
+    return result

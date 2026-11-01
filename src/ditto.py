@@ -12,6 +12,7 @@ import json
 
 import numpy as np
 
+from .transform import model_columns
 from .transform import (DIRECTIONS, FEATURE_NAMES, SizeMoments, _context_rows,
                         flow_statistics, validate_policy_parameters)
 
@@ -261,7 +262,7 @@ class Ditto:
         self._costs[:9] += (1, before, after, padding, chaff, duration - values['flow_duration'],
                            delay, delay / values['flow_duration'] if timed else 0., int(timed))
         self._costs[9] = max(self._costs[9], delay)
-        return {n: result[n] for n in self.columns}
+        return model_columns(row, result, self.columns)
 
     @property
     def overhead(self):

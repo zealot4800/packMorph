@@ -1,4 +1,4 @@
-"""Compare fixed policy features stored in balanced test.pkl files."""
+"""Evaluate baseline or supported packet-defense features in test.pkl files."""
 from __future__ import annotations
 
 import argparse
@@ -10,26 +10,28 @@ import numpy as np
 
 from packmorph.baseline import load_baseline
 from packmorph.blanket import Blanket
-from packmorph.config import DEFAULT_CONFIG, METHODS, load_config, policy_parameters
+from packmorph.config import add_dataset_arguments, dataset_config_path, METHODS, load_config, policy_parameters
 from packmorph.ditto import Ditto
-from packmorph.features import load_pickle_splits
 from packmorph.flowshift import FlowShift
+from packmorph.features import load_pickle_splits, require_packet_dataset
 from packmorph.metrics import evaluate
 from packmorph.minipatch import Minipatch
 from packmorph.minos import Minos
-from packmorph.policy import Profiles
 from packmorph.securitas import Securitas
-from packmorph.transform import _context_rows
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('strategy', choices=(*METHODS, 'all'))
-    parser.add_argument('--config', default=DEFAULT_CONFIG)
+    parser.add_argument('strategy', choices=('baseline', *METHODS, 'all'))
+    add_dataset_arguments(parser)
     args = parser.parse_args()
+    args.config = dataset_config_path(args)
     try:
-        config = load_config(args.config)
-        methods = tuple(config['obfuscation']) if args.strategy == 'all' else (args.strategy,)
+        config = load_config(args.config, dataset=args.dataset)
+        methods = (() if args.strategy == 'baseline' else
+                   tuple(config['obfuscation']) if args.strategy == 'all' else (args.strategy,))
+        if methods:
+            require_packet_dataset(config)
         if any(method not in config['obfuscation'] for method in methods):
             raise ValueError('The requested strategy is missing from obfuscation settings')
         for environment in config['data']['environments']:
@@ -47,10 +49,12 @@ def main() -> int:
                 with (directory / 'val.pkl').open('rb') as handle:
                     validation_saved = pickle.load(handle)
                 if 'flowshift' in methods:
-                    profiles = Profiles.fit(splits['train'], _context_rows(
-                        splits['train'], training_saved.get('flow_context')))
-                    flowshift_fingerprint = FlowShift(profiles, profiles.class_names[0],
-                        settings['flowshift'], str(config['model']['split_seed'])).fingerprint
+                    artifact = training_saved.get('policies', {}).get('flowshift')
+                    signature = FlowShift.signature(splits['train'], training_saved.get('flow_context'),
+                        settings['flowshift'], config['model']['split_seed'], frozen,
+                        splits['validation'], validation_saved.get('flow_context'))
+                    FlowShift.verify(artifact, signature)
+                    artifacts['flowshift'] = artifact
                 for method, cls in (('blanket', Blanket), ('minipatch', Minipatch)):
                     if method not in methods:
                         continue
@@ -85,17 +89,18 @@ def main() -> int:
                                 config['model']['batch_size'])
 
             baseline = score(test)
-            print(f'\n{environment}: {len(test)} balanced test.pkl flows; 16 model features')
+            print(f'\n{environment}: {len(test)} test.pkl flows; {len(test.feature_names)} model features')
+            if not test.capture_disjoint_verified:
+                print('  Flow-level holdout; capture separation is unverified.')
             print(f'{"Policy":<12} {"Accuracy":>10} {"Macro F1":>10} {"Accuracy drop":>14}')
             print(f'{"original":<12} {baseline["accuracy"]:>9.2%} {baseline["macro_f1"]:>9.2%} {0:>11.2f} pp', flush=True)
             for method in methods:
                 cached = policy_tests.get(method, {})
                 if cached.get('parameters') != settings[method]:
                     raise ValueError(f'{method}: test.pkl needs policy features matching the current settings')
-                if method == 'flowshift':
-                    FlowShift.verify(cached, flowshift_fingerprint, config['model']['split_seed'])
                 if method in artifacts and (cached.get('generator') != artifacts[method]['version']
-                        or cached.get('policy_fingerprint') != artifacts[method]['fingerprint']):
+                        or cached.get('policy_fingerprint') != artifacts[method]['fingerprint']
+                        or cached.get('seed') != config['model']['split_seed']):
                     raise ValueError(f'{method} features are stale; run packmorph-obfuscate {method}')
                 if method == 'minos' and (cached.get('generator') != Minos.VERSION
                         or cached.get('seed') != config['model']['split_seed']):
@@ -113,13 +118,10 @@ def main() -> int:
                         print(f'{after["name"]:<15} {after["support"]:>6} {before["recall"]:>11.2%}'
                               f' {after["recall"]:>9.2%} {after["f1"]:>9.2%}', flush=True)
             if 'flowshift' in methods:
-                entry = policy_tests['flowshift']
-                overhead, diagnostic = entry['overhead'], entry['diagnostics']
-                print(f'FlowShift: {diagnostic.get("applied_flows", 0)}/{len(test)} applied; '
-                      f'{diagnostic.get("fallback_flows", 0)} fallbacks; '
-                      f'{overhead["extra_byte_fraction"]:+.2%} bytes; '
-                      f'{overhead["extra_packet_fraction"]:+.2%} packets; '
-                      f'{overhead["mean_added_span_s"]:+.6f}s mean modeled span')
+                overhead = policy_tests['flowshift']['overhead']
+                print(f'FlowShift: {overhead["extra_byte_fraction"]:+.2%} bytes; '
+                      f'{overhead["mean_added_span_s"]:.6f}s mean modeled span; '
+                      f'{overhead["max_extra_byte_fraction"]:.2%} maximum per-flow extra bytes')
             if 'blanket' in methods:
                 overhead = policy_tests['blanket']['overhead']
                 print(f'Blanket: {overhead["extra_byte_fraction"]:+.2%} bytes; '

@@ -5,15 +5,17 @@ import argparse
 import os
 import pickle
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
 
 from packmorph.baseline import load_baseline
 from packmorph.blanket import Blanket
-from packmorph.config import DEFAULT_CONFIG, METHODS, load_config, policy_parameters
+from packmorph.config import add_dataset_arguments, dataset_config_path, METHODS, load_config, policy_parameters
 from packmorph.ditto import Ditto
-from packmorph.features import load_pickle_splits
+from packmorph.flowshift import FlowShift
+from packmorph.features import load_pickle_splits, require_packet_dataset
 from packmorph.minipatch import Minipatch
 from packmorph.securitas import Securitas
 from packmorph.transform import transform_dataset
@@ -22,15 +24,20 @@ from packmorph.transform import transform_dataset
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('strategy', choices=(*METHODS, 'all'))
-    parser.add_argument('--config', default=DEFAULT_CONFIG)
+    add_dataset_arguments(parser)
     parser.add_argument('--environment', choices=('all', 'vpn', 'non-vpn'), default='all')
     parser.add_argument('--split', choices=('train', 'val', 'test'), default='test')
     parser.add_argument('--all-flows', action='store_true', help='transform all three balanced PKL splits')
     parser.add_argument('--refit', action='store_true', help='refit learned policies')
+    parser.add_argument('--flowshift-policy', type=Path, help='use a verified frozen FlowShift study artifact')
     args = parser.parse_args()
+    if args.flowshift_policy and (args.strategy != 'flowshift' or args.environment == 'all' or args.refit):
+        parser.error('--flowshift-policy requires flowshift, one --environment, and no --refit')
+    args.config = dataset_config_path(args)
     temporary_files = []
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, dataset=args.dataset)
+        require_packet_dataset(config)
         environments = (config['data']['environments'] if args.environment == 'all' else
                         ('VPN',) if args.environment == 'vpn' else ('Non VPN',))
         methods = METHODS if args.strategy == 'all' else (args.strategy,)
@@ -46,9 +53,28 @@ def main() -> int:
                 training_saved = pickle.load(handle)
             training_context = training_saved.get('flow_context')
             learners, artifacts = {}, {}
-            if any(m in methods for m in ('securitas', 'blanket', 'minipatch')):
+            if any(m in methods for m in ('flowshift', 'securitas', 'blanket', 'minipatch')):
                 with (directory / 'val.pkl').open('rb') as handle:
                     validation_context = pickle.load(handle).get('flow_context')
+            if 'flowshift' in methods:
+                cached = training_saved.get('policies', {}).get('flowshift')
+                teacher = (load_baseline(config, environment, splits)
+                           if settings['flowshift'].get('selection') == 'distilled' else None)
+                if args.flowshift_policy:
+                    with args.flowshift_policy.open('rb') as handle:
+                        cached = pickle.load(handle)
+                    FlowShift.verify(cached, FlowShift.signature(splits['train'], training_context,
+                        settings['flowshift'], config['model']['split_seed'], teacher,
+                        splits['validation'], validation_context))
+                artifact = FlowShift.fit(splits['train'], training_context, settings['flowshift'],
+                    config['model']['split_seed'], cached=None if args.refit else cached, frozen=teacher,
+                    validation=splits['validation'], validation_context=validation_context)
+                if artifact is not training_saved.get('policies', {}).get('flowshift'):
+                    training_saved.setdefault('policies', {})['flowshift'] = artifact
+                    pending[directory / 'train.pkl'] = training_saved
+                learners['flowshift'] = FlowShift(settings['flowshift'], artifact,
+                    splits['train'].feature_names, config['model']['split_seed'])
+                artifacts['flowshift'] = artifact
             if 'securitas' in methods:
                 cached = training_saved.get('policies', {}).get('securitas')
                 artifact = Securitas.fit(splits['train'], training_context, splits['validation'],
@@ -100,10 +126,12 @@ def main() -> int:
                     parameters = settings[method]
                     summary = {}
                     try:
+                        started = time.perf_counter()
                         features = transform_dataset(
                             data, method, parameters, context=saved.get('flow_context'),
-                            training=splits['train'], training_context=training_context,
                             seed=config['model']['split_seed'], fitted_policy=learners.get(method), summary=summary)
+                        if method == 'flowshift':
+                            summary['generation_seconds'] = time.perf_counter() - started
                     except (ValueError, TypeError, KeyError) as error:
                         raise ValueError(f'{environment}/{filename}.pkl, {method}: {error}') from error
                     policies[method] = dict(X=features, parameters=parameters,
@@ -115,14 +143,12 @@ def main() -> int:
                             policy_fingerprint=artifact['fingerprint'], overhead=learner.overhead,
                             assumptions=artifact['assumptions'])
                     changed = int(np.any(features != data.features, axis=1).sum())
-                    summaries.append(f'{environment} | {filename} | {method}: {changed}/{len(data)} flows changed; 16 features')
+                    summaries.append(f'{environment} | {filename} | {method}: {changed}/{len(data)} flows changed; {len(data.feature_names)} features')
                     if method == 'flowshift':
-                        diagnostic, overhead = summary['diagnostics'], summary['overhead']
-                        summaries.append(f'  FlowShift: {diagnostic.get("applied_flows", 0)}/{len(data)} applied; '
-                            f'{diagnostic.get("fallback_flows", 0)} fallbacks; '
-                            f'{overhead["extra_byte_fraction"]:+.2%} bytes; '
-                            f'{overhead["extra_packet_fraction"]:+.2%} packets; '
-                            f'{overhead["mean_added_span_s"]:+.6f}s mean modeled span')
+                        overhead = learners[method].overhead
+                        summaries.append(f'  FlowShift: {overhead["extra_byte_fraction"]:+.2%} bytes; '
+                            f'{overhead["mean_added_span_s"]:.6f}s mean modeled span; '
+                            f'{summary["diagnostics"].get("fallback_flows", 0)} identity fallbacks')
                     elif method == 'blanket':
                         overhead = learner.overhead
                         summaries.append(f'  Blanket: {overhead["extra_byte_fraction"]:+.2%} bytes; '

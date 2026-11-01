@@ -14,6 +14,7 @@ import json
 
 import numpy as np
 
+from .transform import model_columns, model_statistics
 from .transform import (DIRECTIONS, FEATURE_NAMES, SizeMoments, _context_rows,
                         flow_statistics, forward_bulk_statistics, payload_segments,
                         validate_policy_parameters)
@@ -157,7 +158,7 @@ class Securitas:
     def _apply(self, row, controls):
         points, residual, iat, segments = self._metadata(row, self.seed)
         if not np.any(controls) or not len(points):
-            return {n: float(row[n]) for n in FEATURE_NAMES}, np.zeros(4)
+            return model_statistics(row), np.zeros(4)
         summaries = [SizeMoments(int(a[0]), *map(float, a[1:])) for a in residual]
         additions, reply_gaps = [], {}
         counts = np.zeros(4, dtype=np.float64)  # fragments, fakes, ICMP, fallbacks
@@ -205,7 +206,7 @@ class Securitas:
             result[f'{name}_iat_std'] = float(np.sqrt(max(0., variance)))
         events = np.concatenate((segments, np.asarray(additions, dtype=np.float64).reshape(-1, 6)))
         result.update(forward_bulk_statistics(events))
-        return result, counts
+        return model_statistics(row, result), counts
 
     def __call__(self, row):
         if self.artifact is None:
@@ -214,7 +215,7 @@ class Securitas:
         before = sum(float(row[f'totlen_{d}_pkts']) for d in DIRECTIONS)
         after = sum(result[f'totlen_{d}_pkts'] for d in DIRECTIONS)
         self._totals += (1, before, after, *counts)
-        return {n: result[n] for n in self.columns}
+        return model_columns(row, result, self.columns)
 
     @property
     def overhead(self):
@@ -307,7 +308,7 @@ class Securitas:
         tf = _tensorflow()
         rng = np.random.default_rng(seed)
         scaler = BehaviorScaler.fit(training.features)
-        proxy = tf.keras.Sequential([tf.keras.Input(shape=(16,)), tf.keras.layers.Dense(32, activation='relu'),
+        proxy = tf.keras.Sequential([tf.keras.Input(shape=(len(training.feature_names),)), tf.keras.layers.Dense(32, activation='relu'),
             tf.keras.layers.Dense(32, activation='relu'), tf.keras.layers.Dense(len(training.class_names), activation='softmax')])
         optimizer = tf.keras.optimizers.Adam(.001)
         train_weights, val_weights = cls._weights(training), cls._weights(validation)

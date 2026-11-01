@@ -1,88 +1,60 @@
-# Train and evaluate using the six balanced PKLs.
-output_dir: ..
-
-data:
-  # Dataset paths are relative to this configuration file.
-  root: ../dataset
-  environments: ["Non VPN", "VPN"]
-  categories: ["Streaming", "VoIP", "Chat", "C2", "File Transfer"]
+default_dataset: vnat
 
 model:
-  # Fixed input columns, in model input order, from the measured top-16 lists.
   architecture: cic_prototypical
   split_seed: 42
   device: cpu
   dropout: 0.25
   learning_rate: 0.001
+  # Episodes is an upper bound. Patience values count validation checks, not episodes.
+  validation_interval: 250
+  early_stopping_patience: 8
+  min_delta: 0.001
+  lr_patience: 3
+  lr_factor: 0.5
+  min_learning_rate: 0.00001
+  weight_decay: 0.0001
+  gradient_clipnorm: 1.0
   batch_size: 512
   episodes: 20000
   queries_per_episode: 512
   support_per_class: 5
   calibration_support_per_class: 100
 
-  features:
-    Non VPN:
-      - pkt_len_min
-      - bwd_pkt_len_min
-      - fwd_pkt_len_min
-      - pkt_len_std
-      - bwd_pkt_len_mean
-      - fwd_pkt_len_max
-      - bwd_pkt_len_max
-      - fwd_pkt_len_std
-      - fwd_iat_std
-      - bwd_iat_std
-      - pkt_len_mean
-      - fwd_pkt_len_mean
-      - bwd_pkts_s
-      - bwd_pkt_len_std
-      - tot_bwd_pkts
-      - down_up_ratio
-    VPN:
-      - pkt_len_mean
-      - pkt_len_std
-      - fwd_pkt_len_std
-      - down_up_ratio
-      - fwd_pkt_len_mean
-      - bwd_pkt_len_mean
-      - fwd_pkts_b_avg
-      - bwd_pkt_len_std
-      - bwd_pkt_len_min
-      - totlen_bwd_pkts
-      - fwd_iat_std
-      - totlen_fwd_pkts
-      - fwd_blk_rate_avg
-      - tot_bwd_pkts
-      - pkt_len_min
-      - fwd_pkt_len_max
-
 obfuscation:
-  # Generator parameters; cached comparisons must match these settings.
-  # Fresh generation additionally needs flow_context alongside each PKL's X.
   flowshift:
-    # Offline aggregate adaptation: caps apply to each flow, not just totals.
-    # max_fct_fraction bounds modeled timestamp span, not measured network FCT.
-    # Holding bounds sample an added-span allowance; VM epochs are separate.
-    strengths: [0.25, 0.5, 0.75, 1.0]
+    selection: distilled
+    cost_basis: aggregate
+    guide_steps: 6000
+    guide_validation_interval: 250
+    guide_patience: 6
+    fit_flows_per_service: 256
+    fit_byte_budget: 0.0025
+    fragmentation: false
+    max_extra_byte_fraction: 0.25
+    max_span_fraction: 0.10
+    max_added_span_s: 0.05
     min_displacement: 0.05
-    max_extra_byte_fraction: 0.20
-    max_fct_fraction: 0.15
-    holding_time_ms: [250, 1000]
-  # BLANKET-inspired aggregate policy: training-only fitting, validation checkpoint.
-  # Accuracy-first validation selection; smaller penalties allow more overhead.
+    byte_penalty: 1.0
+    duration_penalty: 1.0
+    environments:
+      Non VPN:
+        byte_penalty: 20.0
+        duration_penalty: 20.0
+      VPN:
+        max_extra_byte_fraction: 0.05
+        byte_penalty: 15.0
+        duration_penalty: 15.0
   blanket:
     iterations: 60
     population: 32
     batch_size: 256
     byte_penalty: 0.01
     duration_penalty: 0.01
-  # Isolated Ditto carrier windows; continuous cover is costly per source flow.
-  # Pattern and estimated virtual-carrier rate use training traffic only.
   ditto:
     pattern_length: 3
     target_utilization: 0.7
   minipatch:
-    # Service-specific black-box fitting; validation selection, never test fitting.
     max_patches: 8
     max_patch_packets: 64
     iterations: 45
@@ -91,13 +63,10 @@ obfuscation:
     success_threshold: 1.0
     dummy_bytes: 512
   minos:
-    # Validation-selected service-classification adaptation of the morphing module.
-    # Includes random padding; proxy encryption/header and tunnel mixing are excluded.
     front_window: 1000
     insertion_probability: 0.6
     padding_max_bytes: 0
     dummy_bytes: 64
-    # Selected by capture-balanced validation accuracy over supported profiles.
     environments:
       Non VPN:
         padding_max_bytes: 32
@@ -105,7 +74,6 @@ obfuscation:
       VPN:
         front_window: 500
   securitas:
-    # Extended aggregate action space; repeated fakes are opt-in per environment.
     iterations: 120
     population: 32
     batch_size: 64
@@ -118,3 +86,110 @@ obfuscation:
         iterations: 40
         population: 16
         fake_copies: 8
+
+datasets:
+  vnat:
+    # User-selected 20 packet-derived features, in the same order for both environments.
+    output_dir: ../experiments/VNAT
+    data:
+      root: ../dataset/VNAT
+      schema: cic-pkl-v1
+      environments:
+      - Non VPN
+      - VPN
+      categories:
+      - Streaming
+      - VoIP
+      - Chat
+      - C2
+      - File Transfer
+    model:
+      features:
+        Non VPN: &id001
+        - fwd_iat_std
+        - flow_iat_mean
+        - bwd_iat_std
+        - pkt_len_min
+        - pkt_len_max
+        - pkt_len_mean
+        - pkt_len_std
+        - fwd_pkt_len_mean
+        - fwd_pkt_len_std
+        - bwd_pkt_len_mean
+        - bwd_pkt_len_std
+        - fwd_pkt_len_max
+        - bwd_pkt_len_max
+        - flow_pkts_s
+        - fwd_pkts_s
+        - bwd_pkts_s
+        - flow_byts_s
+        - fwd_pkts_b_avg
+        - subflow_fwd_pkts
+        - subflow_bwd_pkts
+        VPN: *id001
+  cic-iscx:
+    output_dir: ../experiments/CIC-ISCX
+    data:
+      root: ../dataset/CIC-ISCX
+      schema: iscx-time-features-v1
+      environments:
+      - Non VPN
+      - VPN
+      categories:
+      - BROWSING
+      - CHAT
+      - STREAMING
+      - MAIL
+      - VOIP
+      - P2P
+      - FT
+    model:
+      features:
+        Non VPN:
+        - duration
+        - total_fiat
+        - total_biat
+        - min_fiat
+        - min_biat
+        - max_fiat
+        - max_biat
+        - mean_fiat
+        - mean_biat
+        - flowPktsPerSecond
+        - flowBytesPerSecond
+        - min_flowiat
+        - max_flowiat
+        - mean_flowiat
+        - std_flowiat
+        - min_active
+        - mean_active
+        - max_active
+        - std_active
+        - min_idle
+        - mean_idle
+        - max_idle
+        - std_idle
+        VPN:
+        - duration
+        - total_fiat
+        - total_biat
+        - min_fiat
+        - min_biat
+        - max_fiat
+        - max_biat
+        - mean_fiat
+        - mean_biat
+        - flowPktsPerSecond
+        - flowBytesPerSecond
+        - min_flowiat
+        - max_flowiat
+        - mean_flowiat
+        - std_flowiat
+        - min_active
+        - mean_active
+        - max_active
+        - std_active
+        - min_idle
+        - mean_idle
+        - max_idle
+        - std_idle

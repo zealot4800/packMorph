@@ -13,6 +13,7 @@ import hashlib
 
 import numpy as np
 
+from .transform import model_columns
 from .transform import DIRECTIONS, FEATURE_NAMES, SizeMoments, flow_statistics, validate_policy_parameters
 
 
@@ -158,7 +159,7 @@ class Minos:
         result['fwd_blk_rate_avg'] = payload / elapsed if elapsed else 0.
         before = values['totlen_fwd_pkts'] + values['totlen_bwd_pkts']
         self._totals += (1, before, sum(s.total for s in summaries), sum(metadata[1][wi, qi, :, 0]))
-        return {n: result[n] for n in self.columns}
+        return model_columns(row, result, self.columns)
 
     @property
     def report(self):
