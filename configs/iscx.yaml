@@ -1,0 +1,119 @@
+model:
+  architecture: cic_prototypical
+  split_seed: 42
+  device: cpu
+  dropout: 0.25
+  learning_rate: 0.001
+  validation_interval: 250
+  early_stopping_patience: 8
+  min_delta: 0.001
+  lr_patience: 3
+  lr_factor: 0.5
+  min_learning_rate: 1.0e-05
+  weight_decay: 0.0001
+  gradient_clipnorm: 1.0
+  batch_size: 512
+  episodes: 20000
+  queries_per_episode: 512
+  support_per_class: 5
+  calibration_support_per_class: 100
+  features:
+    Non VPN: &id001
+    - fwd_iat_std
+    - flow_iat_mean
+    - bwd_iat_std
+    - pkt_len_min
+    - pkt_len_max
+    - pkt_len_mean
+    - pkt_len_std
+    - fwd_pkt_len_mean
+    - fwd_pkt_len_std
+    - bwd_pkt_len_mean
+    - bwd_pkt_len_std
+    - fwd_pkt_len_max
+    - bwd_pkt_len_max
+    - flow_pkts_s
+    - fwd_pkts_s
+    - bwd_pkts_s
+    - flow_byts_s
+    - fwd_pkts_b_avg
+    - subflow_fwd_pkts
+    - subflow_bwd_pkts
+    VPN: *id001
+obfuscation:
+  flowshift:
+    selection: distilled
+    cost_basis: aggregate
+    guide_steps: 6000
+    guide_validation_interval: 250
+    guide_patience: 6
+    fit_flows_per_service: 256
+    fit_byte_budget: 0.0025
+    fragmentation: false
+    max_extra_byte_fraction: 0.25
+    max_span_fraction: 0.1
+    max_added_span_s: 0.05
+    min_displacement: 0.05
+    byte_penalty: 1.0
+    duration_penalty: 1.0
+    environments:
+      Non VPN:
+        byte_penalty: 20.0
+        duration_penalty: 20.0
+      VPN:
+        max_extra_byte_fraction: 0.05
+        byte_penalty: 15.0
+        duration_penalty: 15.0
+  blanket:
+    iterations: 60
+    population: 32
+    batch_size: 256
+    byte_penalty: 0.01
+    duration_penalty: 0.01
+  ditto:
+    pattern_length: 3
+    target_utilization: 0.7
+  minipatch:
+    max_patches: 8
+    max_patch_packets: 64
+    iterations: 45
+    max_queries: 1536
+    fit_flows_per_service: 64
+    success_threshold: 1.0
+    dummy_bytes: 512
+  minos:
+    front_window: 1000
+    insertion_probability: 0.6
+    padding_max_bytes: 0
+    dummy_bytes: 64
+    environments:
+      Non VPN:
+        padding_max_bytes: 32
+        dummy_bytes: 1500
+      VPN:
+        front_window: 500
+  securitas:
+    iterations: 120
+    population: 32
+    batch_size: 64
+    byte_penalty: 0.01
+    similarity_reward: 0.2
+    fragment_probability: 0.7
+    icmp_probability: 0.48
+    environments:
+      Non VPN:
+        iterations: 40
+        population: 16
+        fake_copies: 8
+output_dir: ../experiments/CIC-ISCX-packets
+data:
+  root: ../dataset/CIC-ISCX
+  schema: cic-pkl-v1
+  environments:
+  - Non VPN
+  - VPN
+  categories:
+  - CHAT
+  - STREAMING
+  - FT
+  - VOIP

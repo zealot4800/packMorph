@@ -13,7 +13,7 @@ from packmorph.blanket import Blanket
 from packmorph.config import add_dataset_arguments, dataset_config_path, METHODS, load_config, policy_parameters
 from packmorph.ditto import Ditto
 from packmorph.flowshift import FlowShift
-from packmorph.features import load_pickle_splits, require_packet_dataset
+from packmorph.features import load_pickle_splits
 from packmorph.metrics import evaluate
 from packmorph.minipatch import Minipatch
 from packmorph.minos import Minos
@@ -25,13 +25,10 @@ def main() -> int:
     parser.add_argument('strategy', choices=('baseline', *METHODS, 'all'))
     add_dataset_arguments(parser)
     args = parser.parse_args()
-    args.config = dataset_config_path(args)
     try:
-        config = load_config(args.config, dataset=args.dataset)
+        config = load_config(dataset_config_path(args))
         methods = (() if args.strategy == 'baseline' else
                    tuple(config['obfuscation']) if args.strategy == 'all' else (args.strategy,))
-        if methods:
-            require_packet_dataset(config)
         if any(method not in config['obfuscation'] for method in methods):
             raise ValueError('The requested strategy is missing from obfuscation settings')
         for environment in config['data']['environments']:

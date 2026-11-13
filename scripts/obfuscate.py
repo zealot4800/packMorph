@@ -15,7 +15,7 @@ from packmorph.blanket import Blanket
 from packmorph.config import add_dataset_arguments, dataset_config_path, METHODS, load_config, policy_parameters
 from packmorph.ditto import Ditto
 from packmorph.flowshift import FlowShift
-from packmorph.features import load_pickle_splits, require_packet_dataset
+from packmorph.features import load_pickle_splits
 from packmorph.minipatch import Minipatch
 from packmorph.securitas import Securitas
 from packmorph.transform import transform_dataset
@@ -33,11 +33,9 @@ def main() -> int:
     args = parser.parse_args()
     if args.flowshift_policy and (args.strategy != 'flowshift' or args.environment == 'all' or args.refit):
         parser.error('--flowshift-policy requires flowshift, one --environment, and no --refit')
-    args.config = dataset_config_path(args)
     temporary_files = []
     try:
-        config = load_config(args.config, dataset=args.dataset)
-        require_packet_dataset(config)
+        config = load_config(dataset_config_path(args))
         environments = (config['data']['environments'] if args.environment == 'all' else
                         ('VPN',) if args.environment == 'vpn' else ('Non VPN',))
         methods = METHODS if args.strategy == 'all' else (args.strategy,)

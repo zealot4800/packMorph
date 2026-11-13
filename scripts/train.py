@@ -16,9 +16,8 @@ def main() -> int:
                         default="all")
     add_dataset_arguments(parser)
     args = parser.parse_args()
-    args.config = dataset_config_path(args)
     try:
-        config = load_config(args.config, dataset=args.dataset)
+        config = load_config(dataset_config_path(args))
         environments = (config["data"]["environments"] if args.environment == "all"
                         else ("VPN",) if args.environment == "vpn" else ("Non VPN",))
         for environment in environments:

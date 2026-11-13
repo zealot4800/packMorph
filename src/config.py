@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import math
 import os
-from copy import deepcopy
 from pathlib import Path
-import textwrap
 
 import yaml
 
 from .transform import METHODS, validate_parameters
 
-DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "configs" / "default.yaml"
+CONFIG_DIR = Path(__file__).resolve().parent.parent / 'configs'
+DATASET_CONFIGS = {'vnat': CONFIG_DIR / 'vnat.yaml', 'cic-iscx': CONFIG_DIR / 'iscx.yaml'}
 DATA_KEYS = {"root", "environments", "categories"}
 MODEL_KEYS = {"architecture", "device", "dropout", "learning_rate",
               "batch_size", "episodes", "queries_per_episode", "support_per_class",
@@ -68,8 +67,8 @@ def validate_config(config: dict, path: str | Path) -> dict:
     if (not isinstance(data, dict) or not DATA_KEYS <= set(data)
             or set(data) - DATA_KEYS - {'schema'}):
         raise ValueError("Invalid data settings")
-    if data.get('schema', 'cic-pkl-v1') not in {'cic-pkl-v1', 'iscx-time-features-v1'}:
-        raise ValueError('Unsupported data.schema')
+    if data.get('schema', 'cic-pkl-v1') != 'cic-pkl-v1':
+        raise ValueError('Only prepared packet-feature PKLs (cic-pkl-v1) are supported')
     if (not isinstance(model, dict) or not MODEL_KEYS <= set(model)
             or set(model) - MODEL_KEYS - set(TRAINING_DEFAULTS)):
         raise ValueError("Invalid CICFlowMeter model settings")
@@ -131,43 +130,15 @@ def validate_config(config: dict, path: str | Path) -> dict:
     return config
 
 
-def _merge_settings(shared: dict, overrides: dict) -> dict:
-    result = deepcopy(shared)
-    for key, value in overrides.items():
-        result[key] = (_merge_settings(result[key], value)
-                       if isinstance(result.get(key), dict) and isinstance(value, dict)
-                       else deepcopy(value))
-    return result
-
-
-def _selected_dataset(settings: dict, dataset: str | None) -> str:
-    selected = dataset if dataset is not None else settings.get('default_dataset')
-    profiles = settings.get('datasets')
-    if not isinstance(profiles, dict) or not isinstance(selected, str) or selected not in profiles:
-        raise ValueError(f'Unknown dataset profile: {selected!r}')
-    return selected
-
-
-def load_config(source: str | Path = DEFAULT_CONFIG, *, dataset: str | None = None) -> dict:
-    """Read classifier settings and transformation parameters."""
-    path = Path(source).expanduser().resolve()
+def load_config(source: str | Path | None = None, *, dataset: str | None = None) -> dict:
+    """Read a standalone config; default to VNAT when no dataset is selected."""
+    if dataset is not None and dataset not in DATASET_CONFIGS:
+        raise ValueError(f'Unknown dataset: {dataset!r}')
+    path = Path(source if source is not None else DATASET_CONFIGS[dataset or 'vnat']).expanduser().resolve()
     try:
         settings = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as error:
         raise ValueError(f"Invalid YAML in {path}: {error}") from error
-    if isinstance(settings, dict) and 'datasets' in settings:
-        if set(settings) != {'default_dataset', 'datasets', 'model', 'obfuscation'}:
-            raise ValueError('Shared config requires default_dataset, datasets, model and obfuscation')
-        selected = _selected_dataset(settings, dataset)
-        profile = settings['datasets'][selected]
-        if (not isinstance(profile, dict) or not {'output_dir', 'data', 'model'} <= set(profile)
-                or set(profile) - {'output_dir', 'data', 'model', 'obfuscation'}
-                or not isinstance(profile['model'], dict)):
-            raise ValueError(f'Invalid dataset profile: {selected}')
-        settings = _merge_settings({'model': settings['model'],
-                                    'obfuscation': settings['obfuscation']}, profile)
-    elif dataset is not None:
-        raise ValueError('--dataset requires a configuration with dataset profiles')
     if isinstance(settings, dict) and isinstance(settings.get("data"), dict):
         override = os.environ.get("PACKMORPH_FLOW_CSV_ROOT")
         if override:
@@ -178,29 +149,13 @@ def load_config(source: str | Path = DEFAULT_CONFIG, *, dataset: str | None = No
 
 
 def add_dataset_arguments(parser) -> None:
-    parser.add_argument('--config', type=Path, help='shared YAML configuration (default: configs/default.yaml)')
-    parser.add_argument('--dataset', choices=('vnat', 'cic-iscx'),
-                        help='dataset profile (default: default_dataset in YAML)')
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--config', type=Path, help='standalone YAML configuration')
+    selection.add_argument('--dataset', choices=tuple(DATASET_CONFIGS),
+                           help='vnat selects configs/vnat.yaml; cic-iscx selects configs/iscx.yaml (default: vnat)')
 
 
 def dataset_config_path(args) -> Path:
     if args.config is not None:
         return Path(args.config)
-    return DEFAULT_CONFIG
-
-
-def replace_config_features(text: str, dataset: str | None, features: dict) -> str:
-    """Update only the selected profile's feature block, retaining surrounding comments."""
-    settings = yaml.safe_load(text)
-    keys = (['datasets', _selected_dataset(settings, dataset), 'model', 'features']
-            if 'datasets' in settings else ['model', 'features'])
-    node = yaml.compose(text)
-    for key in keys:
-        pair = next(((k, v) for k, v in node.value if k.value == key), None)
-        if pair is None:
-            raise ValueError(f'Missing configuration block: {key}')
-        key_node, node = pair
-    lines = text.splitlines(keepends=True)
-    block = textwrap.indent(yaml.safe_dump({'features': features}, sort_keys=False),
-                            ' ' * key_node.start_mark.column)
-    return ''.join(lines[:key_node.start_mark.line]) + block + ''.join(lines[node.end_mark.line:])
+    return DATASET_CONFIGS[args.dataset or 'vnat']
