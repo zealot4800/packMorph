@@ -1,7 +1,31 @@
-"""Classification metrics for held-out flow captures."""
+"""Classification metrics and fixed-bandwidth traffic transmission costs."""
 from __future__ import annotations
 
 import numpy as np
+
+
+def transmission_overhead(original_bytes, obfuscated_bytes, bandwidth_mbps=100., flows=1):
+    """Whole-traffic FCT = bits / bits per second (Securitas Fig. 3, 100 Mbps).
+
+    This accounts for transmission volume, independently of trace timestamps,
+    shaping waits, policy processing, and application/network feedback.
+    """
+    before, after, rate = float(original_bytes), float(obfuscated_bytes), float(bandwidth_mbps)
+    if (any(isinstance(v, (bool, np.bool_)) for v in (original_bytes, obfuscated_bytes, bandwidth_mbps))
+            or not np.isfinite([before, after, rate]).all() or before <= 0 or after < 0
+            or rate <= 0 or type(flows) is not int or flows < 1):
+        raise ValueError('Transmission costs require positive original bytes, bandwidth and flow count; finite nonnegative output bytes')
+    original_s, obfuscated_s = 8 * before / (rate * 1e6), 8 * after / (rate * 1e6)
+    if not np.isfinite([original_s, obfuscated_s]).all() or original_s <= 0:
+        raise ValueError('Transmission times must be finite with a positive baseline')
+    overhead_pct = 100 * (after - before) / before
+    return dict(bandwidth_mbps=rate, flows=flows, original_ip_bytes=before,
+                obfuscated_ip_bytes=after, extra_ip_bytes=after - before,
+                bandwidth_overhead_pct=overhead_pct, fct_overhead_pct=overhead_pct,
+                original_total_fct_s=original_s, obfuscated_total_fct_s=obfuscated_s,
+                added_total_fct_s=8 * (after - before) / (rate * 1e6),
+                original_mean_fct_s=original_s / flows, obfuscated_mean_fct_s=obfuscated_s / flows,
+                fct_basis='whole IP traffic bits / constant bandwidth; summed transmission time, not measured application FCT')
 
 
 def capture_macro_accuracy(labels, predicted, captures, class_count):
